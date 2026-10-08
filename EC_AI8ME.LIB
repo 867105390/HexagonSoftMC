@@ -1,0 +1,312 @@
+'************************  AXL_AI_8_ME IO Module Library  ************************
+'
+' File:		EC_AI8ME.LIB
+' Purpose:	This library holds Phoenix Contact AXL_AI_8_ME IO module specific data and functions
+'			ETHERCAT.LIB MUST be globally loaded FIRST due to dependencies
+'
+'			The module uses eight input process data words. Each channel is mapped to a word.
+'			To extract and interpret the data correctly, PDO 0x6000,1 is read (128 bits in total), and every 2 bytes
+'			are related to as an unsigned 16 bits integer.
+' Version:	1.0.0.1
+' Author:	Nir Geller
+'
+' History:	16.11.2014  V1.0.0.1 - Updated EC_INSTALL_AXL_AI_8_ME to comply with v1.0.0.1
+'			of ETHERCAT.LIB: EC_USE_SLAVE: Added a new argument 'dc_sync'
+'
+'			* Introduced functions that read the analog inputs from object 0x6000,1 VIA PDO
+'
+'			15.12.2014  V1.0.0.2 - Adapted to comply with new IOs handling
+'			in Ethercat.LIB version 1.0.0.2   ,   MC version 0.4.13.2rc1-C2
+'
+' ********************************************************************************
+
+dim shared LIB_VERSION as const string = "1.0.0.2"
+
+
+'*******************    AXL F BK EC 2688899   *******************
+'*******************    AXL AI 8-ME 2688187   *******************
+
+common shared PHOENIX_CON_VENDOR_ID_0X84 as const long = 0x00000084
+common shared AXL_AI8ME_PRODUCT_CODE_0X290783 as const long = 0x00290783
+
+dim shared Number_Of_Channels as const long = 8
+
+
+type AXL_SLAVE_INFO
+
+	PDO_index as long
+	PDO_subindex as long
+	num_of_bits as long
+	first_sys_dio as long
+
+end type
+
+
+'****************************************************************************
+' Subroutine Name: EC_AI8ME_Lib_Version
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: EC_AI8ME Library Version
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_AI8ME_Lib_Version as string
+
+	EC_AI8ME_Lib_Version = "EC_AI8ME.LIB Version: " + LIB_VERSION
+
+end function
+
+
+'***************************************************************************************************************
+' Subroutine Name: EC_INSTALL_AXL_AI_8_ME
+' Description: This subroutine is AXL_AI_8_ME SPECIFIC. 
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave address of the IO module
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public sub EC_INSTALL_AXL_AI_8_ME(byval slaveAddr as long, slices[*] as AXL_SLAVE_INFO, byval num_of_slices as long)
+
+	dim i as long = 1
+
+	' This product doesn't support DC synchronous mode. Invoking EC_USE_SLAVE with dc_sync flag set to FALSE.
+	' MC will not try to sync the clock of this device. Once the master is started, the device will be raised to
+	' OP mode, and it will be possible to read its PDOs
+
+	call EC_USE_SLAVE(slaveAddr, PHOENIX_CON_VENDOR_ID_0X84, AXL_AI8ME_PRODUCT_CODE_0X290783, "ECAT_IOMODULE_SLAVE", FALSE)
+
+	for i = 1 to num_of_slices
+
+		' Associate Module digital IOs with system digital IOs
+		call EC_ASSOCIATE_PDO_TO_SYS_DIO(slaveAddr, slices[i]->PDO_index, slices[i]->PDO_subindex, slices[i]->first_sys_dio, slices[i]->num_of_bits, 0)  '  0 - inherent offset
+		printu "Slave  # : sys.dI/O. # to sys.dI/O. #" ;slaveAddr, slices[i]->first_sys_dio, slices[i]->first_sys_dio + slices[i]->num_of_bits
+
+	next
+
+end sub
+
+
+
+'***************************************************************************************************************
+' Subroutine Name: AI8ME_SDO_Ananlog_Inputs_Raw
+' Description:	This subroutine is AXL_AI_8_ME SPECIFIC. It reads object 0x6000 VIA SDO into a string buffer
+'				and then extracts the data into an array of longs. This allows reading the analog inputs when
+'				the EtherCAT master isn't running.
+' Called From: AI8ME_Read_Ananlog_Inputs_Double
+' Author: Nir Geller 
+' Input Parameters: Slave address of the IO module
+'					A reference to a long array to be populated
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+Public Sub AI8ME_SDO_Ananlog_Inputs_Raw(byval module_address as long, data[*] as long)
+
+	dim ret_Str as string
+	dim str1 as string
+	dim length as long
+	dim tempVal as long = 0
+	dim i as long = 0
+	dim k as long = 1
+
+	ret_Str = ec_sdo_read_string(module_address, 0x6000, 1, length)
+
+	for i = 1 to length step 2
+
+		tempVal = 256*ASC(ret_Str,i)+ASC(ret_Str,i+1)
+		
+		' Sign extension
+		if tempVal band 2^15 then
+			tempVal = tempVal bor 0xFFFF0000
+		end if
+
+		data[k] = tempVal
+		k = k + 1
+
+	next
+
+End Sub
+
+
+
+'***************************************************************************************************************
+' Subroutine Name: AI8ME_PDO_Ananlog_Inputs_Raw
+' Description: This subroutine is AXL_AI_8_ME SPECIFIC. It reads object 0x6000 VIA PDO into an array of longs.
+' Called From: AI8ME_Read_Ananlog_Inputs_Double
+' Author: Nir Geller 
+' Input Parameters: Slave address of the IO module
+'					A reference to a long array to be populated
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+Public Sub AI8ME_PDO_Ananlog_Inputs_Raw(byval module_address as long, data[*] as long)
+
+	dim retVal_array[4] as long
+	dim retVal as long = 0
+	dim i as long = 1
+	dim k as long = 1
+
+	retVal = EC_PDO_READ_N(module_address, 0x6000, 1, retVal_array)
+
+	for i = 1 to 4
+
+		data[k] = retVal_array[i] BAND 0xFFFF
+
+		' Sign extension
+		if data[k] band 2^15 then
+			data[k] = data[k] bor 0xFFFF0000
+		end if
+
+		data[k + 1] = retVal_array[i] SHR 16
+
+		' Sign extension
+		if data[k + 1] band 2^15 then
+			data[k + 1] = data[k + 1] bor 0xFFFF0000
+		end if
+
+		k = k + 2
+
+	next
+
+End Sub
+
+
+'***************************************************************************************************************
+' Subroutine Name: AI8ME_SDO_Ananlog_Inputs_Double
+' Description:	This subroutine is AXL_AI_8_ME SPECIFIC. It invokes AI8ME_SDO_Ananlog_Inputs_Raw and retrieves an array 
+'				of longs, then it converts the raw data to a valid voltage read of the analog inputs (doubles).
+'				This allows reading the analong inputs when	the EtherCAT master isn't running.
+' Called From: 
+' Author: Nir Geller 
+' Author: Nir Geller 
+' Input Parameters: Slave address of the IO module
+'					A reference to a double array to be populated
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+Public Sub AI8ME_SDO_Ananlog_Inputs_Double(byval module_address as long, Voltage[*] as double)
+
+	dim raw_data[8] as long
+	dim i as long = 0
+
+	call AI8ME_SDO_Ananlog_Inputs_Raw(module_address, raw_data)
+
+	for i = 1 to Number_Of_Channels
+
+		Voltage[i] = raw_data[i] / 3000
+
+	next
+
+End Sub
+
+
+
+'***************************************************************************************************************
+' Subroutine Name: AI8ME_PDO_Ananlog_Inputs_Double
+' Description: This subroutine is AXL_AI_8_ME SPECIFIC. It invokes AI8ME_PDO_Ananlog_Inputs_Raw and retrieves an array 
+'			   of longs, then it converts the raw data to a valid voltage read of the analog inputs (doubles).
+' Called From: 
+' Author: Nir Geller 
+' Author: Nir Geller 
+' Input Parameters: Slave address of the IO module
+'					A reference to a double array to be populated
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+Public Sub AI8ME_PDO_Ananlog_Inputs_Double(byval module_address as long, Voltage[*] as double)
+
+	dim raw_data[8] as long
+	dim i as long = 0
+
+	call AI8ME_PDO_Ananlog_Inputs_Raw(module_address, raw_data)
+
+	for i = 1 to Number_Of_Channels
+
+		Voltage[i] = raw_data[i] / 3000
+
+	next
+
+End Sub
+
+
+
+'***************************************************************************************************************
+' Function Name: AI8ME_Set_Measuring_range
+' Description: This Function is AXL_AI_8_ME SPECIFIC. This function enables parameterization of channels 1 to 8 measuring range
+' Called From: 
+' Author: Nir Geller 
+' Author: Nir Geller 
+' Input Parameters: Slave address of the IO module
+'					Channel to set
+'					Measuring range: 0V ... 10V (default) 	- 0
+'									-/+10V 					- 1
+'									0V ... 5V 				- 2
+'									-/+5V 					- 3
+'									0mA ... 20mA 			- 4
+'									-/+20mA 				- 5
+'									4mA ... 20mA 			- 6
+'									Reserved 				- 7 ... 14
+'									Channel inactive 		- 15
+'
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+Public Function AI8ME_Set_Measuring_range(byval module_address as long, byval Channel as long, byval Measure_Parameter as long) as long
+
+	dim param_str as string
+
+	if Measure_Parameter > 6 or Measure_Parameter < 0 then
+
+		print "Measuring parameter must be an integer in the range 0-6"
+		AI8ME_Set_Measuring_range =  -2
+		goto AI8ME_Set_Measuring_range_Done
+
+	end if
+
+	if Channel > 8 or Channel < 1 then
+
+		print "Channel must be an integer in the range 1-8"
+		AI8ME_Set_Measuring_range =  -3
+		goto AI8ME_Set_Measuring_range_Done
+	
+	end if
+
+	param_str = chr$(00) + chr$(00) + chr$(0x80) + chr$(Channel) + chr$(02) + chr$(00)+ chr$(Measure_Parameter)
+	call ec_sdo_write_string(module_address, 0x2000, 1, param_str)
+
+
+	if ec_sdo_read(module_address, 0x2000, 2) <> 1 then
+		print "Failed to set measuring parameter ";Measure_Parameter;" to channel ";Channel
+		AI8ME_Set_Measuring_range =  -1
+	end if
+
+
+AI8ME_Set_Measuring_range_Done:
+
+
+End Function
+
+
+

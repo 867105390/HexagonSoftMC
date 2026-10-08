@@ -1,0 +1,116 @@
+'------------------------------------------------------------------------------
+' File:        <MyLib>.lib
+' Purpose:     TouchProbe function for Hexagon 
+' Version:     1.00
+' Author:      Lukes
+' Description:
+' History:     2019-02-20  <MyShortCut>  V1.00
+'              Created
+'------------------------------------------------------------------------------
+
+' module global "constants"
+
+
+' module global variables
+
+
+' <MyLib>.lib
+common shared TProbe_sVersion as const string = "TProbe_VER 1.0" + " 20/Feb/2019"
+common shared probeTrigger as long
+common shared probeEnable as long
+
+common shared TX as double
+common shared TY as double
+common shared TZ as double
+
+common shared approachDistance as double           '逼近距离 
+common shared backDistance as double = 10          '回退距离
+common shared moveVelocity as double = 10          '移动速度
+common shared touchVelocity as double              '触测速度
+common shared scanVelocity as double               '扫描速度
+
+
+
+public function TProbeSetEnable(byval lStatus as long) as long
+   probeEnable = lStatus 
+end function
+
+public function TProbeGetEnable as long
+   TProbeGetEnable = probeEnable
+end function
+
+public function TProbeSetBackDistance(byval dVal as double) as long
+   backDistance = dVal 
+end function
+
+public function TProbeGetBackDistance as double
+   TProbeGetBackDistance = backDistance 
+end function
+
+public function TProbeSetMoveVelocity(byval dVal as double) as long
+   moveVelocity = dVal 
+end function
+
+public function TProbeGetMoveVelocity as double
+   TProbeGetMoveVelocity = moveVelocity 
+end function
+
+
+public sub TProbeSetInmode(ax as generic axis)
+  dim lTouchProbeInMode_0x20E0    as long = 0x20E0
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeInMode_0x20E0, 1, 16 , 11)   ' select input for inmode 
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeInMode_0x20E0, 2, 16 , 27)    ' set inmode for selected input
+end sub
+
+
+
+public function TProbeGetPosition(ax as generic axis) as double
+  dim lTouchProbePosition_0x60BB as long = 0x60BB
+  TProbeGetPosition = EC_SDO_READ(ax.Dadd, lTouchProbePosition_0x60BB, 0)
+end function
+
+'x = 1
+'y = 2
+'z = 3
+public function TProbeGetPositionPDO(byval ax as long) as double
+  dim lTouchProbePosition_0x60B8 as long = 0x60B8
+  TProbeGetPosition = EC_PDO_READ(ax, lTouchProbePosition_0x60B8, 0)
+
+end function
+
+
+public function TProbeDetected(ax as generic axis) as long
+  dim lProbeStatus as long
+  lProbeStatus = TProbeGetStatus(ax) BAND 0b010  
+  if lProbeStatus then
+    TProbeDetected = TRUE
+  else
+    TProbeDetected = FALSE
+  end if
+end function
+
+
+function TProbeGetStatus(ax as generic axis) as long
+  dim lTouchProbeStatus_0x60B9 as long = 0x60B9
+  TProbeGetStatus = EC_PDO_READ(ax.Dadd, lTouchProbeStatus_0x60B9, 0)
+end function
+
+
+public sub TProbeResetTriggerSetup(ax as generic axis)
+  dim lObj60B8Value      as long
+  dim lTouchProbeSetup_0x60B8  as long = 0x60B8
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeSetup_0x60B8, 0, 16,0)  '  reset 
+end sub
+
+
+public sub TProbeSetTriggerSetup(ax as generic axis)
+  dim lObj60B8Value      as long
+  dim lTouchProbeSetup_0x60B8  as long = 0x60B8
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeSetup_0x60B8, 0, 16, 1)  '  reset 
+  Sleep 20
+  lObj60B8Value = 0b00100011  'Binary Value for configuring First Touch Probe
+  '1 bit: Enable touch probe 1
+  '2 bit: continuous record
+  '5 bit: samping at negative edge of touch probe 1
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeSetup_0x60B8, 0, 16,lObj60B8Value)
+end sub

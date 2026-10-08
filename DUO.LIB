@@ -1,0 +1,180 @@
+' Master_Duo: keep XYZ as the motion group; A4/A5 are electronic slaves.
+' Copy effective AX_SETUP + PARA settings, not separately maintained values.
+common shared ERR_DUO_POSITION as error "Duo not aligned/bound. Home five axes before enable" 20801
+common shared ERR_DUO_ENABLE as error "Enable must be 0 or 1" 20802
+common shared duoLastError as long = 0
+
+public sub DuoBind
+  dim bindError as long = 0
+  duoLastError = 0
+  if DuoPositionsMatch = 0 then
+    throw ERR_DUO_POSITION
+  end if
+  try
+    attach x
+    attach z
+    attach X_F
+    attach Z_F
+    x.SlaveDisable = 1
+    z.SlaveDisable = 1
+    X_F.MasterSource = x.PCMD
+    X_F.GearRatio = 1
+    X_F.SlaveDisconnect = 0
+    X_F.Slave = GEAR
+    Z_F.MasterSource = z.PCMD
+    Z_F.GearRatio = 1
+    Z_F.SlaveDisconnect = 0
+    Z_F.Slave = GEAR
+  catch else
+    bindError = errornumber
+    try
+      X_F.Slave = OFF
+      X_F.MasterSource = NONE
+    catch else
+    end try
+    try
+      Z_F.Slave = OFF
+      Z_F.MasterSource = NONE
+    catch else
+    end try
+  end try
+  try
+    detach X_F
+  catch else
+  end try
+  try
+    detach Z_F
+  catch else
+  end try
+  try
+    detach x
+  catch else
+  end try
+  try
+    detach z
+  catch else
+  end try
+  if bindError <> 0 then
+    duoLastError = bindError
+    throw
+  end if
+end sub
+
+public function DuoPositionsMatch as long
+  DuoPositionsMatch = (abs(x.PFB-X_F.PFB) <= x.PESettle) and (abs(z.PFB-Z_F.PFB) <= z.PESettle)
+end function
+
+' Drive-internal homing must run without electronic gearing: home resets PFB.
+public sub DuoUnbind
+  attach X_F
+  attach Z_F
+  X_F.Slave = OFF
+  Z_F.Slave = OFF
+  X_F.MasterSource = NONE
+  Z_F.MasterSource = NONE
+  detach X_F
+  detach Z_F
+end sub
+
+' Enable each follower before its master. Disable does not erase the gear.
+public sub DuoEnableAxis(byval axisRef as long, byval enabled as long)
+  dim enableError as long
+  if enabled <> 0 and enabled <> 1 then
+    throw ERR_DUO_ENABLE
+  end if
+  if enabled <> 0 and (axisRef = 1 or axisRef = 3) then
+    if X_F.Slave <> GEAR or Z_F.Slave <> GEAR then
+      throw ERR_DUO_POSITION
+    end if
+    if axisRef = 1 and (x.En = 0 or X_F.En = 0) then
+      if abs(x.PFB-X_F.PFB) > x.PESettle then
+        throw ERR_DUO_POSITION
+      end if
+    end if
+    if axisRef = 3 and (z.En = 0 or Z_F.En = 0) then
+      if abs(z.PFB-Z_F.PFB) > z.PESettle then
+        throw ERR_DUO_POSITION
+      end if
+    end if
+  end if
+  try
+    if enabled <> 0 then
+      if axisRef = 1 then
+        X_F.En = 1
+      end if
+      if axisRef = 3 then
+        Z_F.En = 1
+      end if
+    end if
+    systemaxis(axisRef).En = enabled
+  catch else
+    enableError = errornumber
+    try
+      systemaxis(axisRef).En = 0
+    catch else
+    end try
+    try
+      if axisRef = 1 then
+        X_F.En = 0
+      end if
+      if axisRef = 3 then
+        Z_F.En = 0
+      end if
+    catch else
+    end try
+    duoLastError = enableError
+    throw
+  end try
+  if enabled = 0 then
+    if axisRef = 1 then
+      X_F.En = 0
+    end if
+    if axisRef = 3 then
+      Z_F.En = 0
+    end if
+  end if
+end sub
+
+public sub DuoEnableGroup(byval enabled as long)
+  dim enableError as long
+  if enabled <> 0 and enabled <> 1 then
+    throw ERR_DUO_ENABLE
+  end if
+  if enabled <> 0 then
+    if X_F.Slave <> GEAR or Z_F.Slave <> GEAR then
+      throw ERR_DUO_POSITION
+    end if
+    if gXYZ.En = 0 or X_F.En = 0 or Z_F.En = 0 then
+      if DuoPositionsMatch = 0 then
+        throw ERR_DUO_POSITION
+      end if
+    end if
+  end if
+  try
+    if enabled <> 0 then
+      X_F.En = 1
+      Z_F.En = 1
+    end if
+    gXYZ.En = enabled
+  catch else
+    enableError = errornumber
+    try
+      gXYZ.En = 0
+    catch else
+    end try
+    try
+      X_F.En = 0
+    catch else
+    end try
+    try
+      Z_F.En = 0
+    catch else
+    end try
+    duoLastError = enableError
+    throw
+  end try
+  if enabled = 0 then
+    X_F.En = 0
+    Z_F.En = 0
+  end if
+end sub

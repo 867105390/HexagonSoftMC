@@ -1,0 +1,329 @@
+'------------------------------------------------------------------------------
+' File:        <MyLib>.lib
+' Purpose:     Just an example of a module header
+' Version:     1.00
+' Author:      <MyFullName>
+' Description:
+' History:     YYYY-MM-DD  <MyShortCut>  V1.00
+'              Created
+'------------------------------------------------------------------------------
+
+' module global "constants"
+
+
+' module global variables
+
+
+' <MyLib>.lib
+
+
+
+
+'****************************************************************************
+' Subroutine Name: ec_grHome
+' Description: This subroutine is CDHD SPECIFIC.
+'     This subroutine is used to start HOMING procedure for hexagon xyz 3 gres at the same time
+'      **** INVOKE THIS SUBROUTINE ONLY AFTER TASK HAS ATTACHED TO grIS ****
+' Called From: 
+' Author: Chi
+' Input Parameters: grisGroup
+'                   homingTimeout - Mgrimum time to try homing procedure (Milliseconds)
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub ec_grHome(byval homingTimeout as long)
+
+  dim slaveAddr[3] as long
+  dim currModOp[3] as long  ' current drive's mode of operation
+  dim homingNotDone[3] as long
+  dim driveEnabled[3] as long ' flag that indicates the state of the drive one sub is invoked
+  dim IsMapped_0x6060[3] as long ' flag that indicates if object 0x6060 is mapped to a PDO
+  dim IsMapped_0x6061[3] as long ' flag that indicates if object 0x6060 is mapped to a PDO
+  dim axesArr[3] as generic axis  'generic axes according to hexagon machine: need 3 axes
+
+  ' homing status
+
+  dim inProgress[3] as long ' in progress
+  dim throw1 as long = 0
+
+  dim counter as long = 0  '  a counter used to count 10 iterations of sleep when enabling/disabling gris
+  dim counter_rp as long = 0    ' a conter used to count 3 axes index
+  dim retVal as long
+  
+  
+  ''init parameters
+  for counter_rp = 1 to 3
+     homingNotDone[counter_rp] = TRUE
+     IsMapped_0x6060[counter_rp] = 0
+     IsMapped_0x6061[counter_rp] = 0
+     inProgress[counter_rp] = 0
+     axesArr[counter_rp] = systemaxis(counter_rp)     
+  next counter_rp
+  
+  counter_rp = 0
+
+
+ ' Find if objects 0x6060 and 0x6061 are mapped to a PDO
+  
+  
+  for counter_rp = 1 to 3
+      if EC_IS_PDO(axesArr[counter_rp].dadd, 0x6060, 0) then
+      IsMapped_0x6060[counter_rp] = 1
+    end if
+    if EC_IS_PDO(axesArr[counter_rp].dadd, 0x6061, 0) then
+      IsMapped_0x6061[counter_rp] = 1
+    end if 
+    
+    slaveAddr[counter_rp] = axesArr[counter_rp].dadd  
+  next counter_rp
+  
+  counter_rp =0 
+  
+
+  'sanity check over input
+  if (homingTimeout < 1) or (homingTimeout > 500000) then
+    throw ec_slave_home_err_timeout
+  end if
+
+
+  ' check drive's status: enabled/disabled. Save it (in order to
+  ' return the drive in the same status), and disable axes
+  
+  for counter_rp = 1 to 3 
+       if axesArr[counter_rp].en = true then
+        driveEnabled[counter_rp] = true
+        axesArr[counter_rp].en = false
+        counter = 0
+        while true = axesArr[counter_rp].en AND counter < 10
+          sleep 10
+          counter = counter + 1
+        end while
+        if axesArr[counter_rp].en = true then
+          throw ec_slave_home_err_disable 'failed to disable gris
+        end if
+      end if
+  next counter_rp
+  counter_rp = 0
+  
+    'get current mode of operation, and save it
+  for counter_rp = 1 to 3 
+    if IsMapped_0x6061[counter_rp] then
+      currModOp[counter_rp] = EC_PDO_READ(slaveAddr[counter_rp], Modes_Of_Operation_Display_6061h, 0)
+    else
+      currModOp[counter_rp] = EC_SDO_READ(slaveAddr[counter_rp], Modes_Of_Operation_Display_6061h, 0)
+    end if   
+  next counter_rp
+
+  counter_rp = 0
+  
+  
+  
+  'set mode of operation = 6 - homing mode
+  
+  for counter_rp = 1 to 3
+  
+  if IsMapped_0x6060[counter_rp] then
+    call EC_PDO_WRITE(slaveAddr[counter_rp], Modes_Of_Operation_6060h, 0, 6)
+  else
+    call EC_SDO_WRITE(slaveAddr[counter_rp], Modes_Of_Operation_6060h, 0, 8, 6)
+  end if
+
+  next counter_rp
+
+  'make sure changing opmode was successful. if not - throw an exception  
+  retVal = 0
+  counter = 0
+  while (retVal <> 6) and (counter < 10)
+  
+    for counter_rp = 1 to 3 
+      if IsMapped_0x6061[counter_rp] then
+        retVal = EC_PDO_READ(slaveAddr[counter_rp], Modes_Of_Operation_Display_6061h, 0)
+      else
+        retVal = EC_SDO_READ(slaveAddr[counter_rp], Modes_Of_Operation_Display_6061h, 0)
+      end if
+    next counter_rp
+    counter_rp = 0
+    sleep 100 
+  end while
+  
+  if retVal <> 6 then
+    throw ec_slave_home_err_chgOpMode6 'home_drive_err_chgOpMode6
+  end if
+  
+  
+  'enter gris into following mode
+  counter_rp = 0
+  for counter_rp = 1 to 3 
+    axesArr[counter_rp].fmode = 2
+      
+    'enable drives
+    axesArr[counter_rp].en = true
+    counter = 0
+    while false = axesArr[counter_rp].en AND counter < 10
+      sleep 10
+      counter = counter + 1
+    end while
+    if axesArr[counter_rp].en = false then
+        ' Couldn't enable drive. Restore previous opmode and throw an exception
+        if IsMapped_0x6060[counter_rp] then
+          call EC_PDO_WRITE(slaveAddr[counter_rp], Modes_Of_Operation_6060h, 0, currModOp[counter_rp])
+        else
+          call EC_SDO_WRITE(slaveAddr[counter_rp], Modes_Of_Operation_6060h, 0, 8, currModOp[counter_rp])
+        end if
+        
+        throw ec_slave_home_err_enable 'failed to enable gris
+     end if
+  
+  next counter_rp
+  counter_rp = 0 
+
+
+
+  
+  ' Poll bit 13 in status word to determine whether CDHD started homing procedure
+  ' If bit 13 is set and object 0x2090 holds 0, homing didn't start due to wrong conditions
+  
+  retVal = 1
+  counter = 0
+  while (retVal = 1) and (counter < 10)
+    
+    for counter_rp = 1 to 3
+        if ((EC_PDO_READ(slaveAddr[counter_rp], EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^13) = 0) and \
+            (EC_SDO_READ(slaveAddr[counter_rp], Homing_Status_0X2090, 0) > 0) then
+            
+          retVal = 0
+          
+        else      
+          retVal = 1
+          counter = counter + 1
+          sleep 50
+    
+        end if
+    next counter_rp
+    counter_rp = 0 
+  end while
+  
+  if retVal = 1 then
+    throw ec_slave_home_err_not_started
+  end if
+  
+  
+    'homing procedure started
+    'read status word while homing is not done, and no error occurred, make sure 3 axes home done all, if not, throw an error
+    counter_rp = 0
+   for counter_rp =  1 to 3
+    inProgress[counter_rp] = 1
+   next counter_rp
+    counter_rp = 0
+    
+    counter = sys.clock ' sample current system clock (in ticks)
+    counter_rp = 0 
+  while homingNotDone[1] OR homingNotDone[2] OR homingNotDone[3] AND (homingTimeout > sys.clock - counter)
+    
+    'retVal = EC_PDO_READ(slaveAddr, Homing_Status_0X2090, 0)  '  Sample homing status   '  Uncomment when 2090 is mapped to a PDO
+    
+    
+    for counter_rp = 1 to 3 
+          retVal = EC_SDO_READ(slaveAddr[counter_rp], Homing_Status_0X2090, 0)  '  Sample homing status   '  Remove when 2090 is mapped to a PDO
+          
+          
+          
+          Select Case retVal
+      
+            Case 1 to 18 'inProgress  ' Yevgeny 25/06/13 : changed from 20 to 18 according to CDHD changes  (Itai) 
+              sleep 10
+              'print "homing slave ";slaveAddr;". state: ";retVal
+      
+            Case 19 ' homeok  ' Yevgeny 25/06/13 : changed from 21 to 19 according to CDHD changes  (Itai) 
+              inProgress[counter_rp] = 0
+              homingNotDone[counter_rp] = false
+              'print "homing slave ";slaveAddr;". state: ";retVal;" success!"
+      
+            Case 20 'homeErrStop ' Yevgeny 25/06/13 : changed from 22 to 20 according to CDHD changes  (Itai) 
+              throw1 = 1
+              'print "homing slave ";slaveAddr;". state: ";retVal;" ERROR ! throwing!"
+      
+          End Select
+ 
+    next counter_rp
+      counter_rp = 0
+   
+  end while
+    
+  if 1 = inProgress[1] OR 1 = inProgress[2] OR 1 = inProgress[3] then
+    'SHOULD BE REPLACED WITH A THROW ???
+    'retVal = EC_PDO_READ(slaveAddr, Homing_Status_0X2090, 0)  '  Sample homing status   '  Uncomment when 2090 is implemented in PDO
+    retVal = EC_SDO_READ(slaveAddr[0], Homing_Status_0X2090, 0)  '  Sample homing status   '  Remove when 2090 is implemented in PDO
+    print "Homing interrupted or timed out before procedure was complete. Homing state is ";retVal
+  end if
+    
+    'disable drive
+    
+    for counter_rp = 1 to 3
+    
+            axesArr[counter_rp].en = false
+            sleep 500
+            counter = 0
+            while (EC_PDO_READ(slaveAddr[counter_rp], EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 AND counter < 10 '  while true = gr.en AND counter < 10
+                sleep 100
+                counter = counter + 1
+            end while
+            sleep 100
+            if (EC_PDO_READ(slaveAddr[counter_rp], EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 then 'if gr.en = true then
+                throw ec_slave_home_err_disable 'failed to disable gris
+            end if
+        
+            
+            'set mode of operation to original mode
+          if IsMapped_0x6060[counter_rp] then
+            call EC_PDO_WRITE(slaveAddr[counter_rp], Modes_Of_Operation_6060h, 0, currModOp[counter_rp])
+          else
+            call EC_SDO_WRITE(slaveAddr[counter_rp], Modes_Of_Operation_6060h, 0, 8, currModOp[counter_rp])
+          end if
+        
+          ' make sure restoring opmode was successful. if not - throw an exception
+          retVal = 0
+          counter = 0
+          while (retVal <> currModOp[counter_rp]) and (counter < 10)
+          
+            if IsMapped_0x6061[counter_rp] then
+              retVal = EC_PDO_READ(slaveAddr[counter_rp], Modes_Of_Operation_Display_6061h, 0)
+            else
+              retVal = EC_SDO_READ(slaveAddr[counter_rp], Modes_Of_Operation_Display_6061h, 0)
+            end if
+            
+            sleep 100
+            
+          end while
+          
+          if retVal <> currModOp[counter_rp] then
+            throw ec_slave_home_err_chgOpMode8 'home_drive_err_chgOpMode6
+          end if
+          
+        
+          axesArr[counter_rp].fmode = 0
+        
+          if 1 = throw1 then
+            throw ec_slave_home_err_unknown
+          end if
+          
+            'if drive was enabled when HOME_DRIVE was invoked, enable drive
+            if 0 <> driveEnabled[counter_rp] then
+                axesArr[counter_rp].en = true
+                counter = 0
+                while false = axesArr[counter_rp].en AND counter < 10
+                    sleep 10
+                    counter = counter + 1
+                end while
+                if axesArr[counter_rp].en = false then
+                    throw ec_slave_home_err_enable 'failed to enable gris
+                end if
+            end if
+
+   next counter_rp
+   counter_rp = 0
+ 
+end sub

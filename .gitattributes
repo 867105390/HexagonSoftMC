@@ -1,0 +1,15 @@
+# MC-BASIC sources may be GBK/CP936. Preserve their bytes and line endings.
+*.PRG -text
+*.LIB -text
+
+# Controller and ControlStudio data may be generated or binary.
+*.DAT -text
+*.dat -text
+*.apj -text
+*.asn -text
+*.pse -text
+
+# Repository documentation is UTF-8 text.
+*.md text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf

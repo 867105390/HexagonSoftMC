@@ -1,0 +1,117 @@
+'************************  EtherCAT Configuration - User Library  ************************
+'
+' File:		EC_USER.LIB
+' Purpose:	This library holds User functions for user specific EtherCAT configuration.
+'			Configuration is done in different EtherCAT modes - PEROP, SAFEOP, OP.
+'
+' Version:	1.0.0.0
+' Author:	Nir Geller
+'
+' History:	25.12.2014  V1.0.0.0 - Created
+'
+' ********************************************************************************
+
+dim shared LIB_VERSION as const string = "1.0.0.0"
+
+
+
+
+'****************************************************************************
+' Function Name: EC_USER_Lib_Version
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: CPX_FB38 Library Version
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_USER_Lib_Version as string
+
+	EC_USER_Lib_Version = "ECATUSER.LIB Version: " + LIB_VERSION
+
+end function
+
+
+'***************************************************************************************************************
+' Function Name: EC_USER_PREOP_CONFIG
+' Description: This function allows the user to write ECat slave configuration in PREOP mode
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave address
+' Output Parameters: None
+' Return Value: 0 if successful, -1 if failed
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public function EC_USER_PREOP_CONFIG(byval drive_addr as long) as long
+
+	EC_USER_PREOP_CONFIG = 0
+
+end function
+
+
+
+'***************************************************************************************************************
+' Function Name: EC_USER_SAFEOP_CONFIG
+' Description: This function allows the user to write ECat slave configuration in SAFEOP mode
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave address
+' Output Parameters: None
+' Return Value: 0 if successful, -1 if failed
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public function EC_USER_SAFEOP_CONFIG(byval drive_addr as long) as long
+
+	' Set slave to SAFEOP
+	if FALSE then
+		call EC_Slave_NMT_StateSet(drive_addr, EC_STATE_SAFEOP)
+	end if
+
+
+
+	'****************************************************************
+	'																*
+	'				   USER SAFEOP CONFIGURATION					*
+	'						Add code here							*
+	'					Change FALSE to TRUE						*
+	'****************************************************************
+
+
+
+	' Set slave to OP
+	if FALSE then
+		call EC_Slave_NMT_StateSet(drive_addr, EC_STATE_OP)
+	end if
+
+	EC_USER_SAFEOP_CONFIG = 0
+
+end function
+
+
+
+'***************************************************************************************************************
+' Function Name: EC_USER_OP_CONFIG
+' Description: This function allows the user to write ECat slave configuration in OP mode
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave address
+' Output Parameters: None
+' Return Value: 0 if successful, -1 if failed
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public function EC_USER_OP_CONFIG(byval drive_addr as long) as long
+
+	EC_USER_OP_CONFIG = 0
+
+end function
+
+

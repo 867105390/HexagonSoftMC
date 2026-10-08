@@ -1,0 +1,1488 @@
+
+'------------------------------------------------------------------------------
+' File:        axis_f.lib
+' Purpose:     Implementation of all functions that deal with axes parameters 
+' Version:     1.00
+' Author:      Junxian Li(Start at 2023.07)
+' Description:  
+' History:     
+'              Created
+               '2019-01-23 add software jog mode  
+                           'SYS_OP_JOG_SOFTWARE 3
+               '2019-04-22 add jog position limit 
+               '2019-04-23 Integrated touch probe function          
+               '2019-07-26 add JOG Speed interface
+               '2019-09-01 support serial jogbox,add second limit
+               '2025-02-13 add group stop function
+'------------------------------------------------------------------------------
+'import comm.lib
+common shared axis_ver as string = "3.0"
+common shared Soft_Ver as string = "3.0-20251030"
+COMMON SHARED semMove AS SEMAPHORE
+' common variables and flags for axis, group and homing tasks
+common shared axSeq as long               ' host sequence number
+common shared axRef as long               ' axis or group id
+common shared axRespFileDesc as long = 0  ' file descriptor for responce 
+' axis move variables and flags
+common shared axTarget as double          ' new target
+common shared axVel as double             ' new velocity
+common shared axAbs as long               ' abs(1) or relative(0) movement
+common shared axNewTarget as long=0       ' axis start move flasg
+' home move variables and flags
+common shared axNewHome as long = 0       ' start homing flag, axis is in axRef
+common shared grNewHome as long = 0       ' start group homing flag, all 3 hexagon axes
+' group move variables and flags
+common shared grTarget[32] as double      ' new target for group
+common shared grVel as double             ' new velocity for group
+common shared grAbs  as long              ' abs(1) or relative(0) movement
+common shared grNewTarget as long = 0     ' group start move flag
+common shared grCircleMid[3] as double    ' circle interpolation middle point for group
+common shared grCircleEnd[3] as double    ' circle interpolation end point for group
+common shared moveCircleEnable as long    ' circle interpolation move flag
+common shared grStop as long = 0          ' group stop move flag(2025-2-13)
+
+'***********************************************************************
+'softJog variables
+common shared softJogDir as long          'soft jog direction
+common shared softJogVel as double        'soft jog velocity
+common shared newJog as long = 0        'soft jog move flag
+common shared jogStop as long = 0       'soft jog stop flag
+
+common shared JOG_MOVE_X_SIGNAL_SOFTWARE as double = 0
+common shared JOG_MOVE_Y_SIGNAL_SOFTWARE as double = 0
+common shared JOG_MOVE_Z_SIGNAL_SOFTWARE as double = 0
+'*********************************************************************
+'new variables defined by chi to support jogbox function
+
+
+common shared SYS_OP_JOG_MODE as const long = 1                 'jog mode
+common shared SYS_OP_IPP_MODE as const long = 2                 'i++ mode
+common shared SYS_OP_JOG_SOFTWARE as const long =3              'software jog mode
+common shared SYS_OP_MODE as long = SYS_OP_IPP_MODE            ' by default, system is in I++ mode
+common shared SYS_OP_MODE_CHANGE as long = 0                    ' 1: issure a change operation
+
+'serial/analog jogbox variables
+common shared JOG_TYPE as long=1                                  '1:SR analog jog box  2:serial jog box
+'*****************serial jog box**************************
+common shared JOG_SPEED_MAX as double = 100                        'Jog mode max velocity
+common shared JOG_SPEED_ACTUAL as double
+common shared JOG_SPEED_FACTOR as double = 0.2                    '0.2-low speed;0.5-middle speed;1-high speed
+common shared JOG_X_LOCK as long=1                                '0-lock;1-open
+common shared JOG_Y_LOCK as long=1                                '0-lock;1-open
+common shared JOG_Z_LOCK as long=1                                '0-lock;1-open 
+common shared XJOGTarget as double
+common shared YJOGTarget as double
+common shared ZJOGTarget as double
+
+common shared XJogFactor as double
+common shared YJogFactor as double
+common shared ZJogFactor as double
+
+common shared xSecLimit as double                             
+common shared ySecLimit as double                             
+common shared zSecLimit as double                           
+'********************************************************
+'*****************analog jog box**************************
+common shared JOG_MOVE_X_SIGNAL as double = 0                       'analog input signal of x axis
+common shared JOG_MOVE_Y_SIGNAL as double = 0                       'analog input signal of y axis
+common shared JOG_MOVE_Z_SIGNAL as double = 0                       'analog input signal of z axis
+common shared JOG_FAST_SPEED as double = 100                        'fast jog speed  : Vcruise
+common shared JOG_SLOW_SPEED as double = 0.5                        'slow jog speed  : Vcruise
+common shared JOG_EMERGENCY_SIGNAL as long = 0 
+common shared JOG_START_SIGNAL as long = 0 
+common shared JOG_SWITCH_SPEED_SIGNAL as long = 0                 '1: fast speed, 0: slow speed
+common shared JOG_SPEED_SWITCH_PRESSED as long = 0
+common shared JOG_SPEED as double = JOG_SLOW_SPEED                  ' by default, jog speed is 5, slow speed.
+dim shared JOG_SPEED_CHANGE_FLAG as long = 0
+
+
+common shared JOG_SPEED_FACTOR_X as double=0.4
+common shared JOG_SPEED_FACTOR_Y as double=0.4
+common shared JOG_SPEED_FACTOR_Z as double=0.4
+
+common shared JOG_STATE_MOVE as long = 15
+common shared JOG_STATE_IDLE as long = 10
+common shared JOG_STATE_ERR as long = 20
+common shared JOG_STATE_STOP as long = 5
+common shared JOG_STATE_INIT as long = 1
+common shared JOG_STATE_ATTCH as long =16
+common shared JOG_STATE_DETACH as long =17
+
+common shared JOG_Error_CODE as long = 0 
+common shared JOG_DISTANCE as double = 1
+
+
+common shared JOG_DIR_X as long  
+common shared JOG_TARGET_X as double
+common shared JOG_CP_VAL_X as double = JOG_DISTANCE/2
+common shared JOG_TYPE_X as long 
+common shared JOG_ATTACH_X as long
+common shared JOG_DETACH_X as long
+common shared JOG_VEL_X  as double
+
+
+common shared JOG_DIR_Y as long  
+common shared JOG_TARGET_Y as double
+common shared JOG_CP_VAL_Y as double = JOG_DISTANCE/2
+common shared JOG_TYPE_Y as long 
+common shared JOG_ATTACH_Y as long
+common shared JOG_DETACH_Y as long
+common shared JOG_VEL_Y  as double
+
+common shared JOG_DIR_Z as long  
+common shared JOG_TARGET_Z as double
+common shared JOG_CP_VAL_Z as double = JOG_DISTANCE/2
+common shared JOG_TYPE_Z as long 
+common shared JOG_ATTACH_Z as long
+common shared JOG_DETACH_Z as long
+common shared JOG_VEL_Z  as double
+
+common shared JOG_STATE_X as long  = JOG_STATE_INIT
+common shared JOG_STATE_Y as long  = JOG_STATE_INIT
+common shared JOG_STATE_Z as long  = JOG_STATE_INIT
+
+common shared JOGS_STATE_X as long  = JOG_STATE_INIT
+common shared JOGS_STATE_Y as long  = JOG_STATE_INIT
+common shared JOGS_STATE_Z as long  = JOG_STATE_INIT
+common shared JOGS_STATE_XY as long = JOG_STATE_INIT
+
+common shared directionX as long = 0
+common shared directionY as long = 0
+
+common shared VELOCITYX as double
+common shared VELOCITYY as double
+
+common shared XY_JOG as long =0
+'********************Secondary limit distance***********************
+common shared XLimitDiff as double = 2    'JOG模式下极限位置偏置
+common shared YLimitDiff as double = 2    'JOG模式下极限位置偏置
+common shared ZLimitDiff as double = 2    'JOG模式下极限位置偏置
+
+common shared xDecPos as long = 40   'X轴减速位置(X轴当前位置与极限位置的差值)
+common shared yDecPos as long = 65   'Y轴减速位置(Y轴当前位置与极限位置的差值) 因为 Jerk变小之后 需要增加减速距离 来进行减速
+common shared zDecPos as long = 40   'Z轴减速位置(Z轴当前位置与极限位置的差值)
+
+common shared xSecVlim as double = 0.1   'X轴减速系数，越小越慢
+common shared ySecVlim as double = 0.1   'Y轴减速系数，越小越慢
+common shared zSecVlim as double = 0.1   'Z轴减速系数，越小越慢
+
+'*********************************************************************
+
+'******************** homing parameters setting **********************
+common shared HOME_FAST_SPEED_AX as double = 30       '单轴回零寻找限位开关速度
+common shared HOME_SLOW_SPEED_AX as double = 10       '单轴回零寻找index信号速度
+common shared HOME_ACC_AX as double = 500             '单轴回零加速度
+common shared HOME_ACC_GR as double = 500             '轴组回零加速度
+common shared HOME_FAST_SPEED_GR as double = 20       '轴组回零寻找限位开关速度
+common shared HOME_SLOW_SPEED_GR as double = 10       '轴组回零寻找index信号速度
+'*********************************************************************
+
+common shared JOG_DEFLECTION_SIG as long 
+
+
+common shared TRIGGER_SIG as long = 0
+common shared TRIGGER_SIG_CLEAR_FLAG as long 
+
+
+common shared ZOOM_IN_SIG as long 
+common shared ZOOM_OUT_SIG as long
+
+common shared START_SIG_EN as long 
+common shared EMERGENCY_STOP_SIG as long
+'******************* Touch Probe module *********************************************
+common shared probeTrigger as long
+common shared probeEnable as long
+common shared dirDecEnable as long
+
+
+common shared TX as double
+common shared TY as double
+common shared TZ as double
+
+common shared str_send_tp as string
+common shared approachDistance as double           '
+common shared backDistance as double = 10          '
+common shared moveVelocity as double = 10          '
+common shared touchVelocity as double              '
+common shared scanVelocity as double               '
+common shared backMoveVelocity as double = 30      '?????????
+
+common shared locStart as location of xyz
+common shared probeStop as location of xyz
+common shared newDestUnit as location of xyz
+
+common shared touchEnable as long = 0
+common shared touchPreTarget[3] as double
+common shared touchTarget[3] as double  
+
+common shared touchPreVel as double
+common shared touchVel as double         '
+
+'****************PCOM and Latch*********************
+common shared pcomMaxPoints as long = 500
+common shared latchMaxPoints as long = 500
+common shared xPcom[500] as double 
+common shared yPcom[500] as double
+common shared zPcom[500] as double
+common shared pcomPosition[3][500] as double 
+common shared xLatch[500] as double
+common shared yLatch[500] as double
+common shared zLatch[500] as double
+common shared latchFlag as long
+common shared LatchIndex[3][1] as long
+common shared latch_str as string
+common shared preLatchPos as double
+
+'****************record flags***********************
+common shared cmdflag as long
+common shared motStart as long
+common shared sendflag as long
+dim shared timecnt as double=0.0
+
+'****************collision detection***********************
+common shared mvStandby as long = 0
+common shared bCollisionDetect as long =0
+
+
+
+'*******************************************************************************
+
+dim shared doubleQ as string = chr$(0x22)
+
+
+
+common shared dTimercnt as double 
+'---------------- Public functions ------------------------------
+
+'*****************************************************************************
+' added by chi to support set op mode and other functions
+
+''clear all system states
+public sub resetSys(byval lSocket as long, byval seqNum as long)
+   dim lError as long = 0 
+   dim tryTimes as long = 0
+   dim xdone as long =0
+   ' Cancel through MHGR cleanup before resetting tasks or clearing faults.
+   duoHomeCancel = 1
+   call DuoEnableGroup(0)
+   while grNewHome and TaskState("MHGR.PRG") = 1
+     sleep 10
+   end while
+   if grNewHome then
+     grNewHome = 0
+     homingIsDone = 0
+   end if
+   duoHomeCancel = 0
+   if sys_simulated = 0 then
+   for trytimes = 1 to 5
+     call ec_clear_faults(1)
+     call ec_clear_faults(2)
+     call ec_clear_faults(3)
+     call ec_clear_faults(4)
+     call ec_clear_faults(5)
+   next trytimes
+   end if
+   tryTimes = 0
+   
+   call DuoEnableGroup(0)
+   while gxyz.En <> 0
+    sleep 10
+   end while
+   
+  
+  while TaskState("jog_x.prg") = 1
+      KillTask$ "jog_x.prg"
+     sleep 10
+  end while
+  
+
+  
+  while TaskState("jog_y.prg") = 1
+      KillTask$ "jog_y.prg"
+     sleep 10
+  end while
+  
+
+  
+    while TaskState("jog_z.prg") = 1
+      KillTask$ "jog_z.prg"
+     sleep 10
+  end while
+    
+  
+  while TaskState("MVAXES.prg") = 1
+      KillTask$ "MVAXES.prg"
+     sleep 10
+  end while
+  
+
+
+  while TaskState("MVGROUP.prg")= 1
+      KillTask$ "MVGROUP.prg"
+     sleep 10
+  end while  
+
+  
+  while TaskState("MHGR.prg") = 1
+      KillTask$ "MHGR.prg"
+     sleep 10
+  end while  
+  ' Need restart Tman.prg ,If Tman has some error
+  while not xdone  
+      
+      if TaskState("TMAN.prg")=1 then
+        xdone=1
+        else
+        startTask$ "TMAN.prg"
+        xdone=1
+      end if
+      sleep 10
+  end while
+    
+  xdone=0
+  
+  SYS_OP_MODE = SYS_OP_IPP_MODE
+  
+  while (SYS_OP_MODE <> SYS_OP_IPP_MODE) AND (tryTimes < 10)
+          SYS_OP_MODE = SYS_OP_IPP_MODE
+          tryTimes = tryTimes+1
+          sleep 1
+  end while 
+  
+  SYS_OP_MODE_CHANGE = 1
+  
+  sleep 100
+  
+  if SYS_OP_MODE <> SYS_OP_IPP_MODE then
+      lError = 7702         ''set sys mode error
+      call sendResponce(lSocket,seqNum,lError)
+  end if
+  
+  
+
+  
+ '' sleep 500  
+ call sendResponce(lSocket,seqNum,lError)
+    
+end sub
+
+
+
+''clear TRIGGER_SIG value, indicates that trigger data has been fetched by ipp
+public sub trigClear(byval lSocket as long, byval seqNum as long)
+  
+  dim tryTimes as long = 0
+  dim lError as long = 0 
+  TRIGGER_SIG = 0
+  
+  while (TRIGGER_SIG <> 0) AND (tryTimes < 10)
+      TRIGGER_SIG = 0
+      tryTimes = tryTimes+1
+      sleep 1
+  end while 
+  
+  TRIGGER_SIG_CLEAR_FLAG = 1
+  
+  
+  if TRIGGER_SIG <> 0 then
+      lError = 9701       'Clear Trigger signal faild
+  end if
+  
+  call sendResponce(lSocket,seqNum,lError)
+    
+end sub
+
+
+
+''enable jog operation
+public sub enableJog(byval lSocket as long, byval seqNum as long)
+
+  call setSysOpMode(lSocket,seqNum,1)
+
+end sub
+
+''enable mc jog operation
+public sub enableMcJog
+  call setMcOpMode(1)  
+end sub
+
+'enable softjog operation
+public sub enableSoftJog(byval lSocket as long, byval seqNum as long)
+  call setSysOpMode(lSocket,seqNum,1)
+end sub
+
+
+
+
+''disable jog operation
+public sub disableJog(byval lSocket as long, byval seqNum as long)
+  
+  call setSysOpMode(lSocket, seqNum,2) 
+ 
+end sub
+
+''disable mc jog operation
+public sub disableMcJog
+  call setMcOpMode(2)
+end sub
+
+
+
+public sub getSysOpMode(byval lSocket as long, byval seqNum as long)
+
+  call  sendResponceLong(lSocket,seqNum,0,SYS_OP_MODE)
+end sub
+
+
+'set system operation mode 
+'return value : 
+'         0:      suceed
+'         7701:   failed to set op mode 
+
+sub setSysOpMode(byval lSocket as long, byval seqNum as long,byval lVal as long)
+  dim tryTimes as long = 0
+  dim lError as long = 0 
+  SYS_OP_MODE = lVal
+  
+'  EventOFF TPJOG
+  
+  
+  while (SYS_OP_MODE <> lVal) AND (tryTimes < 10)
+      SYS_OP_MODE = lVal
+      tryTimes = tryTimes+1
+      sleep 1
+  end while 
+  
+  SYS_OP_MODE_CHANGE = 1
+  
+  
+  if SYS_OP_MODE <> lVal then
+      lError = 7701       'OP MODE set failed
+  end if
+   while  SYS_OP_MODE_CHANGE '之前因为第一个点会先发 disablejog,过4ms之后 马上就发第二条 那么第二条指令 ，因为原先切换模式还在执行中，就被忽略了。所以必须先等上一次动作完成，才能返回给上位机状态
+    sleep 4
+  end while 
+  call sendResponce(lSocket,seqNum,lError)
+  
+end sub
+
+sub setMcOpMode(byval lVal as long)
+  dim tryTimes as long = 0
+  dim lError as long = 0 
+  SYS_OP_MODE = lVal
+  
+  EventOFF TPJOG
+  
+  while (SYS_OP_MODE <> lVal) AND (tryTimes < 10)
+      SYS_OP_MODE = lVal
+      tryTimes = tryTimes+1
+      sleep 1
+  end while 
+  
+  SYS_OP_MODE_CHANGE = 1
+  
+  
+  if SYS_OP_MODE <> lVal then
+      lError = 7701       'OP MODE set failed
+  end if
+  
+'  call sendResponce(lSocket,seqNum,lError)
+  
+end sub
+
+
+'************************************************************************************************
+
+'************************************************************************************************
+
+public sub grMoveHome(byval lSocket as long, byval seqNum as long)
+  call grHome(lSocket,seqNum)
+end sub
+
+public sub axMoveHome(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long)
+  call axHome(lSocket,seqNum ,lAxisRef)
+end sub
+
+public sub grMoveAbsolute(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval dXPos as double, byval dYPos as double, byval dZPos as double,byval dValVelocity as double)
+  call  grMove(lSocket,seqNum ,lAxisRef,dXpos,dYpos,dZpos,dValVelocity,1)
+end sub
+
+public sub grMoveAbsolute_2(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval dXPos as double, byval dYPos as double,byval dValVelocity as double)
+  call  grMove_2(lSocket,seqNum ,lAxisRef,dXpos,dYpos,dValVelocity,1)
+end sub
+
+
+public sub axMoveAbsolute(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval dValPosition as double, byval dValVelocity as double)
+  call  axMove(lSocket,seqNum ,lAxisRef,dValPosition,dValVelocity,1)
+end sub
+
+public sub axMoveRelative(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval dValPosition as double, byval dValVelocity as double)
+   call  axMove(lSocket,seqNum ,lAxisRef,dValPosition,dValVelocity,0)
+end sub
+
+public sub softJogMove(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval lDirection as long, byval dValVelocity as double)
+  if JOG_SWITCH_SPEED_SIGNAL <> 1 or JOG_SPEED_SWITCH_PRESSED <> 1 or JOG_SPEED <> JOG_FAST_SPEED then
+      JOG_SWITCH_SPEED_SIGNAL = 1
+      JOG_SPEED_SWITCH_PRESSED = 1
+      JOG_SPEED = JOG_FAST_SPEED
+      JOG_SPEED_CHANGE_FLAG = 1    
+  end if  
+  
+  select case lAxisRef
+    case 1
+      JOG_MOVE_X_SIGNAL_SOFTWARE = -lDirection*dValVelocity*0.08
+    case 2
+      JOG_MOVE_Y_SIGNAL_SOFTWARE = -lDirection*dValVelocity*0.08
+    case 3
+      JOG_MOVE_Z_SIGNAL_SOFTWARE = -lDirection*dValVelocity*0.08
+  end select
+    
+end sub
+
+public sub softJogStop(byval lSocket as long ,byval seqNum as long)
+  JOG_MOVE_X_SIGNAL_SOFTWARE = 0
+  JOG_MOVE_Y_SIGNAL_SOFTWARE = 0
+  JOG_MOVE_Z_SIGNAL_SOFTWARE = 0
+  if JOG_SPEED_CHANGE_FLAG then
+    JOG_SPEED_CHANGE_FLAG = 0
+    JOG_SWITCH_SPEED_SIGNAL = 0
+    JOG_SPEED_SWITCH_PRESSED = 0
+    JOG_SPEED = JOG_SLOW_SPEED  
+  end if
+end sub  
+
+public sub softGrStop(byval lSocket as long ,byval seqNum as long)
+  grStop = 1
+end sub
+
+public sub grMoveCircle(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval dXMidPos as double, byval dYMidPos as double, byval dZMidPos as double,byval dXEndPos as double, byval dYEndPos as double, byval dZEndPos as double, byval dValVelocity as double)
+  call moveCircle(lSocket,seqNum ,lAxisRef,dXMidPos,dYMidPos,dZMidPos,dXEndPos,dYEndPos,dZEndPos,dValVelocity)
+end sub
+
+public sub softJogMoveMutil(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval lxDirection as long, byval lyDirection as long, byval dxValVelocity as double, byval dyValVelocity as double)
+  if JOG_SWITCH_SPEED_SIGNAL <> 1 or JOG_SPEED_SWITCH_PRESSED <> 1 or JOG_SPEED <> JOG_FAST_SPEED then
+      JOG_SWITCH_SPEED_SIGNAL = 1
+      JOG_SPEED_SWITCH_PRESSED = 1
+      JOG_SPEED = JOG_FAST_SPEED
+      JOG_SPEED_CHANGE_FLAG = 1    
+  end if  
+  JOG_MOVE_X_SIGNAL_SOFTWARE = -lxDirection*dxValVelocity*0.04
+  JOG_MOVE_Y_SIGNAL_SOFTWARE = -lyDirection*dyValVelocity*0.04
+end sub
+
+
+' Enable axis
+public sub axEnable(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long,byval  lEna as long)
+  dim lError as long
+  try 
+    call DuoEnableAxis(lAxisRef, lEna)
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+      call sendResponce(lSocket,seqNum,lError)
+end sub
+
+' Enable Groupt
+' Legacy host spelling: use the same five-axis implementation and response.
+public sub grEn(byval lSocket as long,byval seqNum as long,byval lAxisRef as long,byval lEna as long)
+  call grEnable(lSocket,seqNum,lAxisRef,lEna)
+end sub
+
+public sub grEnable(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long,byval  lEna as long)
+  dim lError as long
+  try 
+    call DuoEnableGroup(lEna)
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+      call sendResponce(lSocket,seqNum,lError)
+end sub
+
+' Resume
+public sub ProceedResume(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long)
+  dim lError as long
+  dim gAx as generic axis
+  dim gGr as generic group
+  try 
+    if lAxisRef > sys.AccelerationRate then
+      gGr = systemgroup(lAxisRef)
+      proceed gGr proceedtype = CONTINUE
+    else
+      gAx = systemaxis(lAxisRef)
+      proceed gAx proceedtype = CONTINUE
+    end if  
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+     call sendResponce(lSocket,seqNum,lError)
+end sub
+
+' Clean Motion
+public sub ProceedClean(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long)
+  dim lError as long
+  dim gAx as generic axis
+  dim gGr as generic group
+  try 
+    if lAxisRef > sys.AccelerationRate then
+      gGr = systemgroup(lAxisRef)
+      proceed gGr proceedtype = CLEARMOTION
+    else
+      gAx = systemaxis(lAxisRef)
+      proceed gAx proceedtype = CLEARMOTION
+    end if  
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+      call sendResponce(lSocket,seqNum,lError)
+end sub
+
+' Stop axis/group
+public sub eStop(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long)
+  dim lError as long
+  dim gAx as generic axis
+  dim gGr as generic group
+  try 
+    if lAxisRef > sys.AccelerationRate then
+      gGr = systemgroup(lAxisRef)
+      stop gGr stoptype=IMMEDIATE
+    else
+      gAx = systemaxis(lAxisRef)
+      stop gAx stoptype=IMMEDIATE
+    end if  
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+     call sendResponce(lSocket,seqNum,lError)
+end sub
+
+  
+' get axis current position
+public sub axPfb(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long)
+  dim lError as long = 0
+  dim dPfb as double = 0.0
+  try 
+    dPfb = systemaxis(lAxisRef).pfb
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+     call sendResponceDouble(lSocket,seqNum,lError, dPfb)
+end sub
+
+' get axis position error
+public sub axPe(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long)
+  dim lError as long = 0
+  dim dPfb as double = 0.0
+  try 
+    dPfb = systemaxis(lAxisRef).pe
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+     call sendResponceDouble(lSocket,seqNum,lError, dPfb)
+end sub
+
+' get axis position error
+public sub grPe(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long)
+  dim lError as long = 0
+  dim dPfb as double = 0.0
+  try 
+    dPfb = systemgroup(lAxisRef).pe
+  catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+     call sendResponceDouble(lSocket,seqNum,lError, dPfb)
+end sub
+
+' get group current position
+public sub grPfb(byval lSocket as long,byval seqNum as long,byval  lgrRef as long)
+  dim lError as long = 0
+  dim sResp as string = ""
+  dim bVal as long = true
+  dim i as long = 1
+  dim dPfb as double
+  while bVal
+    try 
+      dPfb = systemgroup(lgrRef).j[i].pfb
+      if i > 1 then 
+        sResp = sResp + " , "
+      end if  
+      i = i + 1
+    catch 8020 '   "Variable does not exist."
+      bVal = false
+    catch else
+        lError = user USR_GET_RECENT_ERROR(1,2,3)
+    end try
+    if bVal then
+      sResp = sResp + STRD$(dPfb,"%g") 'collect all positions
+    end if  
+  end while
+      sResp  = str$(lError)+" {"+sResp+"}" ' add error
+     call sendResponceString(lSocket,seqNum,sResp)
+end sub
+' get group current cartesian position
+public sub grHere(byval lSocket as long,byval seqNum as long,byval  lgrRef as long)
+  dim lError as long = 0
+  dim sResp as string = ""
+  dim bVal as long = true
+  dim i as long = 1
+  dim dPfb as double
+  while bVal
+    try 
+      dPfb = systemgroup(lgrRef).j[i].here
+      if i > 1 then 
+        sResp = sResp + " , "
+      end if  
+      i = i + 1
+    catch 8020 '   "Variable does not exist."
+      bVal = false
+    catch else
+        lError = user USR_GET_RECENT_ERROR(1,2,3)
+    end try
+    if bVal then
+      sResp = sResp + STRD$(dPfb,"%g") 'collect all positions
+    end if  
+  end while
+      sResp  = str$(lError)+" #{"+sResp+"}" ' add error
+     call sendResponceString(lSocket,seqNum,sResp)
+end sub
+
+' get group current cartesian position
+public sub grSetpoint(byval lSocket as long,byval seqNum as long,byval  lgrRef as long)
+  dim lError as long = 0
+  dim sResp as string = ""
+  dim bVal as long = true
+  dim i as long = 1
+  dim dPfb as double
+  while bVal
+    try 
+      dPfb = systemgroup(lgrRef).j[i].setpoint
+      if i > 1 then 
+        sResp = sResp + " , "
+      end if  
+      i = i + 1
+    catch 8020 '   "Variable does not exist."
+      bVal = false
+    catch else
+        lError = user USR_GET_RECENT_ERROR(1,2,3)
+    end try
+    if bVal then
+      sResp = sResp + STRD$(dPfb,"%g") 'collect all positions
+    end if  
+  end while
+      sResp  = str$(lError)+" #{"+sResp+"}" ' add error
+     call sendResponceString(lSocket,seqNum,sResp)
+end sub
+' get group current destination
+public sub grDest(byval lSocket as long,byval seqNum as long,byval  lgrRef as long)
+  dim lError as long = 0
+  dim sResp as string = ""
+  dim bVal as long = true
+  dim i as long = 1
+  dim dPfb as double
+  while bVal
+    try 
+      dPfb = systemgroup(lgrRef).j[i].dest
+      if i > 1 then 
+        sResp = sResp + " , "
+      end if  
+      i = i + 1
+    catch 8020 '   "Variable does not exist."
+      bVal = false
+    catch else
+        lError = user USR_GET_RECENT_ERROR(1,2,3)
+    end try
+    if bVal then
+      sResp = sResp + STRD$(dPfb,"%g") 'collect all positions
+    end if  
+  end while
+      sResp  = str$(lError)+" #{"+sResp+"}" ' add error
+     call sendResponceString(lSocket,seqNum,sResp)
+end sub
+
+' get axis group ID
+public sub getId(byval lSocket as long,byval seqNum as long,byval sElementName as string)
+  dim sProperty as const string = ".elementid"
+  dim stmp as string =""
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  print getElementPropertyExpression(sElementName,sProperty)
+end sub
+
+' get any axis property
+public sub axGetProperty(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long,byval sProperty as string)
+  dim sCommand as string
+  sCommand = "systemaxis("+str$(lAxisRef)+")."+sProperty
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  print getElementPropertyExpression("",sCommand)
+end sub
+' set any axis property
+public sub axSetProperty(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long,byval sProperty as string, byval dValue as double)
+  dim sCommand as string
+  sCommand = "systemaxis("+str$(lAxisRef)+")."+sProperty+"="+str$(dValue)
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  print setElementPropertyExpression("",sCommand)
+end sub
+
+' get any scalar property of group
+public sub grGetProperty(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long,byval sProperty as string)
+  dim sCommand as string
+  sCommand = "systemgroup("+str$(lAxisRef)+")."+sProperty
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  print getElementPropertyExpression("",sCommand)
+end sub
+' set any scalar property of group
+public sub grSetProperty(byval lSocket as long,byval seqNum as long,byval  lAxisRef as long,byval sProperty as string, byval dValue as double)
+  dim sCommand as string
+  sCommand = "systemgroup("+str$(lAxisRef)+")."+sProperty+"="+str$(dValue)
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  print setElementPropertyExpression("",sCommand)
+end sub
+
+' let collsion machine release 
+public sub mvAllow(byval lSocket as long,byval seqNum as long)
+  mvStandby = 0
+  bCollisionDetect = 0
+  call sendResponce(lSocket,seqNum,0)
+end sub
+
+' set Pcom Table Position
+public sub setPcomTablePos(byval lSocket as long,byval seqNum as long, byval ax as long, byval posList as string)
+  dim i as long = 0
+
+  for i = 1 to pcomMaxPoints 
+    pcomPosition[ax][i] = 0
+  next
+  call data_extract(pcomPosition, posList, ax)
+  call setPCom2Drive(ax, pcomPosition)
+
+end sub
+
+' set Pcom Periodic information
+public sub setPcomPositionPeriodic(byval lSocket as long,byval seqNum as long,byval ax as long, byval startPos as double, byval endPos as double, byval Periodic as double)
+  dim dMVar as double
+  dim posFactor as long
+
+  select case ax
+    case 1
+      posFactor = X.PFAC
+    case 2
+      posFactor = Y.PFAC
+    case 3
+      posFactor = Z.PFAC
+  end select
+
+  if startPos > endPos then
+    endPos = RealEndCal(startPos, endPos, Periodic)
+    dMVar = startPos
+    startPos = endPos
+    endPos = dMVar
+  end if
+  
+  try
+    call EC_SDO_WRITE(ax, 0x2191, 0, 16 , 0)
+    call EC_SDO_WRITE(ax, 0x219B, 0, 32 , startPos*posFactor)
+    call EC_SDO_WRITE(ax, 0x219D, 0, 32 , endPos*posFactor) 
+    call EC_SDO_WRITE(ax, 0x219F, 0, 32 , Periodic*posFactor)
+    catch else
+  end try
+
+end sub
+
+'The switch of PCOM
+' tp = 1 Periodic
+' tp = 2 Table
+' Switch = 0(Close), Switch = 1(Open)
+public sub pcomSwitch(byval lSocket as long,byval seqNum as long,byval ax as long, byval tp as long, byval switch as long, byval direc as long)
+  if tp = 1 and switch = 1 then
+    try
+      call EC_SDO_WRITE(ax, 0x2191, 0, 16 , 25)
+      call pcomDirectionSet(ax, direc)
+    catch else
+      ' print "Open PCOM25 failed!" 
+    end try   
+  end if
+ 
+  if tp = 1 and switch = 0 then
+    try
+      call EC_SDO_WRITE(ax, 0x2191, 0, 16 , 0)
+    catch else
+      ' print "Close PCOM25 failed!" 
+    end try   
+  end if
+  
+  if tp = 2 and switch = 1 then
+    try
+      call EC_SDO_WRITE(ax, 0x2191, 0, 16 , 19)
+      call pcomDirectionSet(ax, direc)
+    catch else
+      ' print "Open PCOM19 failed!" 
+    end try   
+  end if
+  
+  if tp = 2 and switch = 0 then
+    try
+      call EC_SDO_WRITE(ax, 0x2191, 0, 16 , 0)
+    catch else
+      ' print "Close PCOM19 failed!" 
+    end try   
+  end if
+
+  if switch = 1 then
+    latchFlag = 1
+  else
+    latchFlag = 0
+    preLatchPos = LatchGetPosition(3)
+  end if
+  
+end sub
+
+
+sub pcomDirectionSet(byval ax as long, byval direc as long)
+  select case direc
+    case 0
+      call EC_SDO_WRITE(ax, 0x2195, 0, 16 , 0)
+    case 1
+      call EC_SDO_WRITE(ax, 0x2195, 0, 16 , 1)    
+    case 2
+      call EC_SDO_WRITE(ax, 0x2195, 0, 16 , 2)
+  end select
+end sub
+
+sub setPCom2Drive(byval ax as long, posArray[*][*] as double)
+  dim lNums as long
+  dim lIndex as long
+  dim lPos as long
+  dim posFactor as long
+  dim lPComTableLength_0x2197 as long = 0x2197
+
+  lNums = posArray[ax][1]
+
+  select case ax
+    case 1
+      posFactor = X.PFAC
+    case 2
+      posFactor = Y.PFAC
+    case 3
+      posFactor = Z.PFAC
+  end select
+
+  try
+    call EC_SDO_WRITE(ax, 0x2191, 0, 16 , 0)
+    for lIndex = 1 to lNums
+      lPos = posArray[ax][lIndex+1] * posFactor
+      call SetPComTable(ax, lIndex, lPos)
+    next
+  catch else 
+  end try
+  
+  ' Write the number of PCOMTable into pcomtableLen1
+  call EC_SDO_WRITE(ax, lPComTableLength_0x2197, 0, 16 , lNums)
+
+end sub
+
+
+sub SetPComTable(byval ax as long, byval seq as long, byval pos as long)
+  dim lPComTable_0x21A1 as long = 0x21A1
+
+  call EC_SDO_WRITE(ax, lPComTable_0x21A1, 1, 32 , seq)
+  call EC_SDO_WRITE(ax, lPComTable_0x21A1, 2, 32 , pos)
+  call EC_SDO_WRITE(ax, lPComTable_0x21A1, 3, 32 , 1)
+end sub 
+
+sub data_extract(posArray[*][*] as double, byval arrayContent as string, byval ax as long)
+  dim lLocBracketsOpen  as Long
+  dim lLocBracketsClose as Long
+  dim lStringLength     as Long
+  dim sNums             as string
+  dim lCommaPos         as long
+  dim data_nums         as long
+
+
+  lLocBracketsOpen = Instr(arrayContent, "[") 
+  lStringLength    = Len(arrayContent)
+  arrayContent   = Right$(arrayContent, lStringLength - lLocBracketsOpen+1)
+  lLocBracketsClose= Instr(arrayContent, "]") 
+  sNums = Mid$(arrayContent, 2, lLocBracketsClose - 2)
+
+  data_nums = 0
+ 
+  While Instr(sNums, ",") > 0
+    lCommaPos = Instr(sNums, ",")                          
+    data_nums = data_nums + 1
+    posArray[ax][data_nums+1] = Val(Left$(sNums, lCommaPos - 1))
+    sNums = Right$(sNums, Len(sNums) - lCommaPos)
+  end while
+
+  if Len(sNums) > 0 Then
+      data_nums = data_nums + 1
+      posArray[ax][data_nums+1] = Val(sNums)
+  end if 
+  posArray[ax][1] = data_nums
+  
+end sub
+
+
+public sub latchInit(byval lSocket as long,byval seqNum as long, byval ax as long)
+  dim lObj60B8Value      as long
+  dim lTouchProbeSetup_0x60B8  as long = 0x60B8
+  call EC_SDO_WRITE(ax, lTouchProbeSetup_0x60B8, 0, 16, 1)  '  reset 
+  Sleep 20
+  lObj60B8Value = 0b00010011  'Binary Value for configuring First Touch Probe
+  '1 bit: Enable touch probe 1
+  '2 bit: continuous record
+  '4 bit: samping at postive edge of touch probe 1
+  call EC_SDO_WRITE(ax, lTouchProbeSetup_0x60B8, 0, 16,lObj60B8Value)
+end sub
+
+
+' get axis group or group property
+public function getElementPropertyExpression(byval sElementName as string, byval sProperty as string) as string
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  getElementPropertyExpression = "?"+sElementName+sProperty
+end function
+' set axis group or group property
+public function setElementPropertyExpression(byval sElementName as string, byval sProperty as string) as string
+' pay attention, recursive execution. Output of this function is printed via VES and re-evaluated again
+  setElementPropertyExpression = sElementName+sProperty
+end function
+
+public function setJogFastSpeed(byval lSocket as long, byval seqNum as long,byval dSpeed as double) as double
+ dim lError as long
+ try 
+    JOG_FAST_SPEED = dSpeed
+ catch else
+    lError = user USR_GET_RECENT_ERROR(1,2,3)
+ end try
+ 
+ call sendResponce(lSocket,seqNum,lError)
+ 
+end function
+
+public function getJogFastSpeed(byval lSocket as long,byval seqNum as long) as double
+  dim currentJogFastSpeed as double
+  dim lError as long
+  try
+    currentJogFastSpeed = JOG_FAST_SPEED
+  catch else
+    lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+  
+  call sendResponceDouble(lSocket,seqNum,lError,currentJogFastSpeed) 
+    
+end function
+
+public function setJogSlowSpeed(byval lSocket as long, byval seqNum as long,byval dSpeed as double) as double
+  dim lError as long
+  try
+    JOG_SLOW_SPEED = dSpeed
+  catch else
+    lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try  
+  call sendResponce(lSocket,seqNum,lError)    
+end function
+
+public function getJogSlowSpeed(byval lSocket as long,byval seqNum as long) as double
+  dim currentJogSlowSpeed as double
+  dim lError as long
+  try
+    currentJogSlowSpeed = JOG_SLOW_SPEED
+   catch else
+    lError = user USR_GET_RECENT_ERROR(1,2,3)
+  end try
+  
+  call sendResponceDouble(lSocket,seqNum,lError,currentJogSlowSpeed) 
+  
+end function
+
+
+'----------------- Touch Probe functions ---------------
+
+public sub TProbeSetEnable(byval lSocket as long,byval seqNum as long,byval lStatus as long)
+  dim lError as long 
+   try
+     probeEnable = lStatus
+   catch else
+     lError = user USR_GET_RECENT_ERROR(1,2,3)
+   end try     
+   call sendResponceLong(lSocket,seqNum,lError,probeEnable)
+end sub
+
+public sub TProbeGetEnable(byval lSocket as long,byval seqNum as long)
+   dim probeStatus as long
+   dim lError as long
+   try
+      probeStatus = probeEnable
+   catch else
+      lError = user USR_GET_RECENT_ERROR(1,2,3)
+   end try  
+   call sendResponceLong(lSocket,seqNum,lError,probeStatus)
+end sub
+
+public sub TProbeSetBackDistance(byval lSocket as long,byval seqNum as long,byval dVal as double)
+   dim lError as long
+   try 
+    backDistance = dVal
+   catch else
+    lError = user USR_GET_RECENT_ERROR(1,2,3)
+   end try
+   call sendResponceDouble(lSocket,seqNum,lError,backDistance)  
+end sub
+
+public sub TProbeGetBackDistance(byval lSocket as long,byval seqNum as long)
+   dim lError as long
+   dim getBackDistance as double
+   try
+    getBackDistance = backDistance
+   catch else
+    lError = user USR_GET_RECENT_ERROR(1,2,3)
+   end try
+   call sendResponceDouble(lSocket,seqNum,lError,getBackDistance) 
+end sub
+
+public function TProbeSetMoveVelocity(byval dVal as double) as long
+   moveVelocity = dVal 
+end function
+
+public function TProbeGetMoveVelocity as double
+   TProbeGetMoveVelocity = moveVelocity 
+end function
+
+
+public sub TProbeSetInmode(ax as generic axis,byval lpin as long)
+  dim lTouchProbeInMode_0x20E0    as long = 0x20E0
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeInMode_0x20E0, 1, 16 , lpin)   ' select input for inmode 
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeInMode_0x20E0, 2, 16 , 27)    ' set inmode for selected input
+end sub
+
+public function LatchGetPosition(byval ax as long) as double
+  dim lLatchPosition_0x60BA as long = 0x60BA
+  LatchGetPosition = EC_PDO_READ(ax, lLatchPosition_0x60BA, 0)
+end function
+
+
+public function TProbeGetPosition(ax as generic axis) as double
+  dim lTouchProbePosition_0x60BB as long = 0x60BB
+  TProbeGetPosition = EC_SDO_READ(ax.Dadd, lTouchProbePosition_0x60BB, 0)
+end function
+
+
+public function TProbeDetected(ax as generic axis) as long
+  dim lProbeStatus as long
+  lProbeStatus = TProbeGetStatus(ax) BAND 0b010  
+  if lProbeStatus then
+    TProbeDetected = TRUE
+  else
+    TProbeDetected = FALSE
+  end if
+end function
+
+
+function TProbeGetStatus(ax as generic axis) as long
+  dim lTouchProbeStatus_0x60B9 as long = 0x60B9
+  TProbeGetStatus = EC_PDO_READ(ax.Dadd, lTouchProbeStatus_0x60B9, 0)
+end function
+
+' This function only when startposition bigger than endposition
+function RealEndCal(byval startPos as double, byval endPos as double, byval interval as double) as double
+  RealEndCal = startPos- Int(abs(startPos - endPos)/interval)*interval
+end function
+
+
+public sub TProbeResetTriggerSetup(ax as generic axis)
+  dim lObj60B8Value      as long
+  dim lTouchProbeSetup_0x60B8  as long = 0x60B8
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeSetup_0x60B8, 0, 16,0)  '  reset 
+end sub
+
+
+public sub TProbeSetTriggerSetup(ax as generic axis)
+  dim lObj60B8Value      as long
+  dim lTouchProbeSetup_0x60B8  as long = 0x60B8
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeSetup_0x60B8, 0, 16, 1)  '  reset 
+  Sleep 20
+  lObj60B8Value = 0b00100011  'Binary Value for configuring First Touch Probe
+  '1 bit: Enable touch probe 1
+  '2 bit: continuous record
+  '5 bit: samping at negative edge of touch probe 1
+  call EC_SDO_WRITE(ax.Dadd, lTouchProbeSetup_0x60B8, 0, 16,lObj60B8Value)
+end sub
+
+public sub moveTouch(byval lSocket as long ,byval seqNum as long, byval  lAxisRef as long, byval dXPrePos as double, byval dYPrePos as double, byval dZPrePos as double,byval dXPos as double, byval dYPos as double, byval dZPos as double,byval dPreVelocity as double,byval dVelocity as double)
+  call  touchMove(lSocket,seqNum ,lAxisRef,dXPrepos,dYPrepos,dZPrepos,dXpos,dYpos,dZpos,dPreVelocity,dVelocity,1)
+end sub
+'----------------- Local functions ----------------------
+' move axis absolute or relative
+sub axMove(byval lSocket as long, byval seqNum as long, byval  lAxisRef as long, byval dValPosition as double, byval dValVelocity as double, byval lAbs as long)
+  
+' aquire motion semaphore
+  while semaphoreTake(semMove, 100) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  axTarget = dValPosition
+  axVel = dValVelocity
+  axAbs  = lAbs
+  axNewTarget = 1
+  axRespFileDesc = lSocket
+' start a new motion
+  semaphoreGive(semMove)
+end sub
+' home axis
+public sub axHome(byval lSocket as long, byval seqNum as long, byval  lAxisRef as long)
+  
+' aquire motion semaphore
+  while semaphoreTake(semMove, 100) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  axNewHome = 1
+  axRespFileDesc = lSocket
+' start a new motion
+  semaphoreGive(semMove)
+end sub
+
+
+' move group inner function
+sub grMove(byval lSocket as long, byval seqNum as long, byval  lAxisRef as long, byval dXPos as double, byval dYPos as double,byval dZPos as double,byval dValVelocity as double, byval lAbs as long)
+  
+' aquire motion semaphore
+  while semaphoreTake(semMove, 10) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  grTarget[1] = dxPos
+  grTarget[2] = dYPos
+  grTarget[3] = dZPos
+  grVel = dValVelocity
+  grAbs  = lAbs
+  grNewTarget = 1
+  axRespFileDesc = lSocket
+' start a new motion
+  semaphoreGive(semMove)
+end sub
+
+' move touch group inner function
+sub touchMove(byval lSocket as long, byval seqNum as long, byval  lAxisRef as long, byval dXPrePos as double, byval dYPrePos as double,byval dZPrePos as double,byval dXPos as double, byval dYPos as double,byval dZPos as double,byval dPreVelocity as double,byval dVelocity as double, byval lAbs as long)
+  
+' aquire motion semaphore
+  while semaphoreTake(semMove, 10) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  touchPreTarget[1] = dXPrePos
+  touchPreTarget[2] = dYPrePos
+  touchPreTarget[3] = dZPrePos
+  
+  touchTarget[1] = dXPos
+  touchTarget[2] = dYPos
+  touchTarget[3] = dZPos
+  
+  touchPreVel = dPreVelocity
+  touchVel  = dVelocity
+  touchEnable = 1
+  axRespFileDesc = lSocket
+' start a new touch
+  semaphoreGive(semMove)
+end sub
+
+sub grMove_2(byval lSocket as long, byval seqNum as long, byval  lAxisRef as long, byval dXPos as double, byval dYPos as double,byval dValVelocity as double, byval lAbs as long)
+  
+' aquire motion semaphore
+  while semaphoreTake(semMove, 100) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  grTarget[1] = dxPos
+  grTarget[2] = dYPos
+  grVel = dValVelocity
+  grAbs  = lAbs
+  grNewTarget = 1
+  axRespFileDesc = lSocket
+' start a new motion
+  semaphoreGive(semMove)
+end sub
+
+
+sub grHome(byval lSocket as long, byval seqNum as long)
+  ' aquire motion semaphore
+  while semaphoreTake(semMove, 100) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  grNewHome = 1
+  axRespFileDesc = lSocket
+' start a new motion
+  semaphoreGive(semMove)
+end sub
+
+'software jog mode
+'-------------------------------------------
+
+sub jogMove(byval lSocket as long, byval seqNum as long, byval  lAxisRef as long, byval lDirection as long, byval dValVelocity as double)
+  while semaphoreTake(semMove, 100) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  softJogDir = lDirection
+  softJogVel = dValVelocity
+  newJog = 1
+  axRespFileDesc = lSocket
+' start a new motion
+  semaphoreGive(semMove)
+end sub
+
+sub moveCircle(byval lSocket as long,byval seqNum as long,byval lAxisRef as long,byval dXMidPos as double,byval dYMidPos as double,byval dZMidPos as double,byval dXEndPos as double,byval dYEndPos as double,byval dZEndPos as double,byval dValVelocity as double)
+   while semaphoreTake(semMove, 100) = 0 
+    sleep 1
+  end while
+  axSeq = seqNum
+  axRef = lAxisRef
+  grCircleMid[1] = dXMidPos
+  grCircleMid[2] = dYMidPos
+  grCircleMid[3] = dZMidPos
+  grCircleEnd[1] = dXEndPos
+  grCircleEnd[2] = dYEndPos
+  grCircleEnd[3] = dZEndPos
+  grVel = dValVelocity
+  moveCircleEnable=1
+  semaphoreGive(semMove)
+end sub
+
+
+public sub calcRate(gG as generic group, rate as double, byval dTargetX as double, byval dTargetY as double)
+    dim dx as double
+    dim dy as double
+    dim dDistance as double
+
+    dx = gG.here{1} - dTargetX
+    dy = gG.here{2} - dTargetY
+    print "gG.here{1} is ", gG.here{1}, "gG.here{2} is ", gG.here{2}, "X is ",dTargetX, "Y is ",dTargetY
+
+    dDistance = SQRT(dx*dx + dy*dy)
+    print "dDistance is ", dDistance
+    if dDistance <= 0.5 then
+        rate = 6
+    end if
+
+    if 0.5 < dDistance and dDistance <= 0.75 then
+        rate =10
+    end if
+
+    if 0.75 < dDistance and dDistance <= 0.95 then
+        rate =15
+    end if
+
+    if 0.95 < dDistance and dDistance <= 4.5 then
+        rate = 20
+    end if
+
+    if 4.5 < dDistance and dDistance <= 5.5 then
+        rate = 40
+    end if
+
+    if 5.5 < dDistance and dDistance <= 6.5 then
+        rate = 70
+    end if
+
+    if 6.5 < dDistance and dDistance <= 7.5 then
+        rate = 85
+    end if
+
+    if dDistance > 7.5 then
+        rate = 90
+    end if
+
+end sub
+
+
+public sub GetLatch(byval lSocket as long, byval seqNum as long, byval ax as long, byval count as long)
+
+    dim str_latch as string
+    dim axisPrefix as string
+    dim values as double
+    dim lnums as long
+    dim i as long
+
+    ' Determine axis prefix
+    select case ax
+        case 1
+            axisPrefix = "X"
+            lnums = xLatch[1]+1
+        case 2
+            axisPrefix = "Y"
+            lnums = yLatch[1]+1           
+        case 3
+            axisPrefix = "Z"
+            lnums = zLatch[1]+1          
+        case else
+            axisPrefix = "?"  ' Unknown axis
+            lnums = 0
+    end select
+
+    str_latch = "LATCH_" + axisPrefix + ":"
+
+    ' Build payload depending on index
+    if count = -1 and lnums > 1 then
+        ' Send all values from 1 to count
+        for i = 2 to lnums
+            select case ax
+                case 1
+                    values = xLatch[i]
+                case 2
+                    values = yLatch[i]
+                case 3
+                    values = zLatch[i]
+                case else
+                    values = 0
+            end select
+            str_latch = str_latch + STR$(i) + "=" + STR$(values) + ";"
+        next
+    end if
+
+    if count > 0 and count <= lnums then
+      select case ax
+          case 1
+              values = xLatch[count]
+          case 2
+              values = yLatch[count]
+          case 3
+              values = zLatch[count]
+          case else
+              values = 0
+      end select
+      str_latch = STR$(count) + "=" + STR$(values) + ";"
+    end if
+    call sendResponceString(lSocket,seqNum,str_latch)
+    latch_str = str_latch
+    ' print #lSocket, str_latch
+
+end sub
+
+
+public sub latchArrayClear(byval lSocket as long, byval seqNum as long, byval ax as long)
+  dim i as long 
+  select case ax
+    case 1
+      for i = 1 to 500
+        xLatch[i] = 0
+      next
+    case 2
+      for i = 1 to 500
+        yLatch[i] = 0
+      next
+    case 3
+      for i = 1 to 500
+        zLatch[i] = 0
+      next
+  end select
+end sub
+
+
+
+
+
+

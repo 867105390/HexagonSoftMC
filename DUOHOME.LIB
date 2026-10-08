@@ -1,0 +1,219 @@
+' Five-drive internal homing: Z/Z_F then X/X_F then Y.
+' Caller attaches all five axes with electronic gearing disconnected.
+common shared homing_num_of_axes as const long = 5
+common shared IS_HOMING_PARAMETER_DEFINED as long = 0
+common shared homingIsDone as long = 0
+common shared duoHomeLastError as long = 0
+common shared duoHomeCancel as long = 0
+
+public sub DuoCheckHomeCancel
+  if duoHomeCancel then
+    throw ec_slave_home_err_interrupted
+  end if
+end sub
+
+public sub ec_grHome(byval homingTimeout as long)
+  call ec_grHome_XY(homingTimeout)
+end sub
+
+public sub ec_grHome_XY(byval homingTimeout as long)
+  dim axesArr[5] as generic axis
+  dim currModOp[5] as long
+  dim modeSaved[5] as long
+  dim i as long
+  dim lError as long = 0
+  dim startedAt as double
+
+  axesArr[1] = x
+  axesArr[2] = y
+  axesArr[3] = z
+  axesArr[4] = X_F
+  axesArr[5] = Z_F
+  homingIsDone = 0
+  duoHomeLastError = 0
+  if homingTimeout < 1 or homingTimeout > 500000 then
+    throw ec_slave_home_err_timeout
+  end if
+
+  try
+    for i = 1 to homing_num_of_axes
+      call DuoCheckHomeCancel
+      call DuoHomeDisable(axesArr[i])
+      currModOp[i] = DuoHomeReadMode(axesArr[i])
+      ' Match EC_SLAVE_HOME_DS402: do not leave a previous failed home in mode 6.
+      if currModOp[i] = 6 then
+        currModOp[i] = 8
+      end if
+      modeSaved[i] = 1
+      call DuoHomeSetMode(axesArr[i], 6)
+    next i
+
+    startedAt = sys.Clock
+    call DuoHomePair(z, Z_F, 2, startedAt, homingTimeout)
+    call DuoHomePair(x, X_F, 2, startedAt, homingTimeout)
+    call DuoHomePair(y, y, 1, startedAt, homingTimeout)
+  catch else
+    lError = errornumber
+  end try
+
+  ' Restore every drive even if another drive failed. Leave all disabled:
+  ' MHGR checks equal positions and rebinds before enabling the group.
+  for i = 1 to homing_num_of_axes
+    try
+      call DuoHomeDisable(axesArr[i])
+    catch else
+      if lError = 0 then
+        lError = errornumber
+      end if
+    end try
+    try
+      if modeSaved[i] then
+        call DuoHomeSetMode(axesArr[i], currModOp[i])
+      end if
+    catch else
+      if lError = 0 then
+        lError = errornumber
+      end if
+    end try
+    try
+      axesArr[i].FMode = 0
+    catch else
+      if lError = 0 then
+        lError = errornumber
+      end if
+    end try
+  next i
+  if lError <> 0 then
+    duoHomeLastError = lError
+    throw
+  end if
+end sub
+
+sub DuoHomeDisable(ax as generic axis)
+  dim counter as long = 0
+  ax.En = 0
+  while ((EC_PDO_READ(ax.Dadd, EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0) and (counter < 100)
+    sleep 10
+    counter = counter + 1
+  end while
+  if (EC_PDO_READ(ax.Dadd, EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 then
+    throw ec_slave_home_err_disable
+  end if
+end sub
+
+function DuoHomeReadMode(ax as generic axis) as long
+  if EC_IS_PDO(ax.Dadd, 0x6061, 0) then
+    DuoHomeReadMode = EC_PDO_READ(ax.Dadd, Modes_Of_Operation_Display_6061h, 0)
+  else
+    DuoHomeReadMode = EC_SDO_READ(ax.Dadd, Modes_Of_Operation_Display_6061h, 0)
+  end if
+end function
+
+sub DuoHomeSetMode(ax as generic axis, byval targetMode as long)
+  dim counter as long = 0
+  if EC_IS_PDO(ax.Dadd, 0x6060, 0) then
+    call EC_PDO_WRITE(ax.Dadd, Modes_Of_Operation_6060h, 0, targetMode)
+  else
+    call EC_SDO_WRITE(ax.Dadd, Modes_Of_Operation_6060h, 0, 8, targetMode)
+  end if
+  while (DuoHomeReadMode(ax) <> targetMode) and (counter < 10)
+    sleep 100
+    counter = counter + 1
+  end while
+  if DuoHomeReadMode(ax) <> targetMode then
+    if targetMode = 6 then
+      throw ec_slave_home_err_chgOpMode6
+    else
+      throw ec_slave_home_err_chgOpMode8
+    end if
+  end if
+end sub
+
+sub DuoHomePair(firstAxis as generic axis, secondAxis as generic axis, byval axisCount as long, byval startedAt as double, byval homingTimeout as long)
+  dim pairAxes[2] as generic axis
+  dim done[2] as long
+  dim hasStarted[2] as long
+  dim i as long
+  dim counter as long
+  dim statusWord as long
+  dim homeState as long
+  dim statusWordMask as const long = 2^13 BOR 2^12 BOR 2^10
+  dim homeOk as const long = 2^12 BOR 2^10
+  dim allDone as long = 0
+  dim pairStartedAt as double
+
+  pairAxes[1] = firstAxis
+  pairAxes[2] = secondAxis
+  call DuoCheckHomeCancel
+  for i = 1 to axisCount
+    done[i] = 0
+    hasStarted[i] = 0
+    pairAxes[i].FMode = 2
+  next i
+  ' Request both drives in this pair before polling homing completion.
+  for i = 1 to axisCount
+    call DuoCheckHomeCancel
+    pairAxes[i].En = 1
+  next i
+  for i = 1 to axisCount
+    counter = 0
+    while (pairAxes[i].En = 0) and (counter < 100)
+      sleep 10
+      counter = counter + 1
+    end while
+    if pairAxes[i].En = 0 then
+      throw ec_slave_home_err_enable
+    end if
+  next i
+
+  pairStartedAt = sys.Clock
+  while (allDone = 0) and ((sys.Clock - startedAt) < homingTimeout)
+    call DuoCheckHomeCancel
+    allDone = 1
+    for i = 1 to axisCount
+      statusWord = EC_PDO_READ(pairAxes[i].Dadd, EC_STATUS_INDEX_6041h, 0)
+      if (statusWord band 2^3) <> 0 then
+        throw ec_slave_home_err_unknown
+      end if
+      if (statusWord band 2^2) = 0 then
+        throw ec_slave_home_err_enable
+      end if
+      if (statusWord band 2^13) <> 0 then
+        if (statusWord band 2^10) <> 0 then
+          throw ec_slave_home_err_velzero
+        else
+          throw ec_slave_home_err_velnotzero
+        end if
+      end if
+      if done[i] = 0 then
+        ' DS402 status bits, matching EC_SLAVE_HOME_DS402 in ETHERCAT.LIB.
+        homeState = statusWord band statusWordMask
+        select case homeState
+          case homeOk
+            done[i] = 1
+            hasStarted[i] = 1
+          case 0
+            hasStarted[i] = 1
+          case 2^12
+            hasStarted[i] = 1
+          case 2^10
+            if hasStarted[i] then
+              throw ec_slave_home_err_interrupted
+            end if
+        end select
+        if (hasStarted[i] = 0) and ((sys.Clock - pairStartedAt) >= 500) then
+          throw ec_slave_home_err_not_started
+        end if
+        if done[i] = 0 then
+          allDone = 0
+        end if
+      end if
+    next i
+    if allDone = 0 then
+      sleep 10
+    end if
+  end while
+  if allDone = 0 then
+    throw ec_slave_home_err_timed_out
+  end if
+end sub

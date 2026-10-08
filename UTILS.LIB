@@ -1,0 +1,24 @@
+'------------------------------------------------------------------------------
+' File:        <MyLib>.lib
+' Purpose:     Just an example of a module header
+' Version:     1.00
+' Author:      <MyFullName>
+' Description:
+' History:     YYYY-MM-DD  <MyShortCut>  V1.00
+'              Created
+'------------------------------------------------------------------------------
+
+' module global "constants"
+
+
+' module global variables
+
+
+' <MyLib>.lib
+
+public function a as long
+
+    load autoexec.prg
+    print "loading system.............."
+    a = 0
+end function

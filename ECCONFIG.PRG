@@ -1,0 +1,19 @@
+program
+  if 4.21 = FWVERSION then
+    LOADGLOBAL$ "ETHERCAT.LIB"
+    LOADGLOBAL$ "EC_CDHD.LIB"
+  else
+    LOADGLOBAL$ "ETHERCOT.LIB"
+    LOADGLOBAL$ "EC_CDHDO.LIB"
+  end if
+  LOADGLOBAL$ "EC_USER.LIB"
+  LOADGLOBAL$ "EC_AI8ME.LIB"
+  LOADGLOBAL$ "DUOHOME.LIB"
+
+  LOADGLOBAL$ "comm.lib"
+  LOADGLOBAL$ "DUO.LIB"
+  LOADGLOBAL$ "axis_f.lib"
+  LOADGLOBAL$ "serial.lib"
+
+
+end program

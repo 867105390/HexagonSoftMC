@@ -1,0 +1,1817 @@
+'*****************************  EtherCAT CDHD Library  ****************************
+'
+' File:    EC_CDHD.LIB
+' Purpose:  This library holds all the CDHD specific data and functions
+'      ETHERCAT.LIB MUST be globally loaded FIRST due to dependencies
+' Version:  1.0.0.6
+' Author:  Nir Geller
+'
+' History:  16.11.2014  V1.0.0.1 - Updated EC_INSTALL_STX_CDHD to comply with v1.0.0.1
+'      of ETHERCAT.LIB: EC_USE_SLAVE: Added a new argument 'dc_sync'
+'
+'      15.12.2014  V1.0.0.2 - Adapted to comply with new IOs handling
+'      in Ethercat.LIB version 1.0.0.2   ,   MC version 0.4.13.2rc1-C2
+'
+'      21.12.2014 V1.0.0.3 - Added Vendor ID's of all custom label CDHD
+'
+'      30.DEC.2014 V1.0.0.4 - Added temperature protection set/get functions
+'      11.AUG.2015 V1.0.0.5 - EC_CDHD_DISABLE_SMOOTHING
+'
+'      29.11.2015 V1.0.0.6 - Corrected opmode 7 from CDHD_OPMODE_SYNC_VELOCITY to CDHD_OPMODE_INTER_POSITION
+'
+'********************************************************************************
+
+dim shared LIB_VERSION as const string = "1.0.0.6"
+
+
+common shared SERVOTRONIX_VENDOR_ID_0X2E1 as const long = 0x000002E1
+common shared PBA_SYS_MAXTUNE_VENDOR_ID as const long = 0x000002BA
+common shared GOOGOLTECH_GTHD_VENDOR_ID as const long = 0x000002E1
+common shared MPC_FPRO_VENDOR_ID as const long = 0x00000678
+common shared AKRIBIS_ASD_VENDOR_ID as const long = 0x000002E1
+common shared TECO_JSDZ_VENDOR_ID as const long = 0x000002E1
+common shared HIGEN_SDA7_VENDOR_ID as const long = 0x00000625
+common shared SCHNEIDER_VENDOR_ID as const long = 0x0800005A
+
+common shared STX_CDHD_PRODUCT_CODE_0X0 as const long = 0x00
+common shared STX_CDHD_PRODUCT_CODE_0X1 as const long = 0x01
+common shared STX_CDHD_PRODUCT_CODE_0X2 as const long = 0x2EC
+
+common shared ec_cdhd_feedback_not_set as error "UNKNOWN FEEDBACK TYPE OR FEEDBACK NOT SET PROPERLY" 20200
+
+common shared CDHD_OPMODE_PROFILE_POSITION as const long = 1  '  Profile Position Mode
+common shared CDHD_OPMODE_PROFILE_VELOCITY as const long = 3  '  Profile Velocity Mode
+common shared CDHD_OPMODE_PROFILE_TORQUE as const long = 4  '  Profile Torque Mode
+common shared CDHD_OPMODE_HOMING as const long = 6  '  Homing Mode
+common shared CDHD_OPMODE_INTER_POSITION as const long = 7  '  Interpolated Position Mode
+common shared CDHD_OPMODE_SYNC_POSITION as const long = 8  '  Synchronous Position Mode
+common shared CDHD_OPMODE_SYNC_VELOCITY as const long = 9  '  Synchronous Velocity Mode
+common shared CDHD_OPMODE_SYNC_TORQUE as const long = 10  '  Synchronous Torque Mode
+
+common shared CDHD_Num_Of_Digital_Inputs_11 as const long = 11  ' CDHD has 11 inputs
+common shared CDHD_Num_Of_Digital_Outputs_6 as const long = 6  ' CDHD has 6 inputs
+
+common shared Homing_Status_0X2090 as const long = 0x2090
+
+common shared LAST_FAULT_INDEX_0X603F as const long = 0x603F
+common shared LAST_FAULT_SUBINDEX_0X0 as const long = 0x0
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_CDHD_Lib_Version
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: EC_CDHD Library Version
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_Lib_Version as string
+
+  EC_CDHD_Lib_Version = "EC_CDHD.LIB Version: " + LIB_VERSION
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: EC_CDHD_SET_PDOS
+' Description: Prepare the map of pdos that are supported by the CDHD, in sync pos, sync velocity or velocity mode
+
+
+' Operation Modes:  CDHD can be configured to work in different OpModes that require different PDO mapping of PCMD and VCMD
+'          sync position - PCMD is mapped to 0x607A
+'          position - PCMD is mapped to 0x60C1
+'          sync velocity - VCMD is mapped to 0x60FF instead of 0x6081
+
+'          OpMode is set by passing the argument OPMODE_val with the following constants:
+'          CDHD_OPMODE_INTER_POSITION = 7
+'          CDHD_OPMODE_SYNC_POSITION = 8
+'          CDHD_OPMODE_PROFILE_VELOCITY = 3
+
+
+' Called From: EC_INSTALL_STX_CDHD
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index in topology
+'                   BusID
+'                   Address by Alias
+'          CDHD opmode
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_CDHD_SET_PDOS(byval idx as long, byval busid as long, byval byalias as long , byval OPMODE_val as long ) 
+
+  call EC_SET_PFB_OBJECT(busid, idx, EC_PFB_INDEX_6064h, EC_PFB_SUBINDEX_00h)
+
+  call EC_SET_DIN_OBJECT(busid, idx, DIGITAL_INPUTS_INDEX_0X60FD, DIGITAL_INPUTS_SUBINDEX_0X0)
+
+  call EC_SET_STATUS_OBJECT(busid, idx, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h)
+
+  call EC_SET_CTRL_OBJECT(busid, idx, EC_CTRL_INDEX_6040h, EC_CTRL_SUBINDEX_00h)
+
+  if OPMODE_val = CDHD_OPMODE_INTER_POSITION then
+    call EC_SET_PCMD_OBJECT(busid,idx, 0x60c1, 1) 'for OPMODE 7  instead PCMD 607A  
+  else
+    call EC_SET_PCMD_OBJECT(busid,idx, EC_PCMD_INDEX_607Ah, EC_PCMD_SUBINDEX_00h) '' for OPMODE 8 :
+  end if
+
+
+  if OPMODE_val = CDHD_OPMODE_PROFILE_VELOCITY or OPMODE_val = CDHD_OPMODE_SYNC_VELOCITY then
+    call EC_SET_VCMD_OBJECT(busid, idx, 0x60ff, 0) ' VCMD in Profile Velocity Mode instead VCMD in Synchronous Position Mode 0x6081 :
+  else
+    ' VCMD in Synchronous Position Mode :
+    call EC_SET_VCMD_OBJECT(busid, idx, EC_VCMD_INDEX_6081h, EC_VCMD_SUBINDEX_00h)  '  Should 0x6081 be changed to 0x60B1  ??
+  end if
+
+  call EC_SET_PEXT_OBJECT(busid, idx, EC_PEXT_INDEX_20B6h, EC_PEXT_SUBINDEX_00h)
+
+  call EC_SET_TRQFBK_OBJECT(busid, idx, EC_TRQFBK_INDEX_6078h, EC_TRQFBK_SUBINDEX_00h)
+
+  call EC_SET_TRQCMD_OBJECT(busid, idx, EC_TRQCMD_INDEX_6071h, EC_TRQCMD_SUBINDEX_00h)
+
+  call EC_SET_TRQDMND_OBJECT(busid, idx, EC_TRQDMND_INDEX_6074h, EC_TRQDMND_SUBINDEX_00h)
+
+  call EC_SET_TRQADDCMD_OBJECT(busid, idx, EC_TRQADDCMD_INDEX_60B2h, EC_TRQADDCMD_SUBINDEX_00h)
+
+  call EC_SET_VADDCMD_OBJECT(busid, idx, EC_VADDCMD_INDEX_60B1h, EC_VADDCMD_SUBINDEX_00h)  '  Should vcmd be sent over 0x60B1 instead ov vaddcmd  ??
+
+end sub
+
+
+
+
+'***************************************************************************************************************
+' Function Name: EC_INSTALL_STX_CDHD
+' Description: This subroutine is CDHD SPECIFIC. It configures the CDHD to work with the MC.
+'         It creates PDO mapping, sets micro interpolation and sets Pos_Units according to PNUM and PDEN.
+
+
+' Operation Modes:  CDHD can be configured to work in different OpModes that require different PDO mapping of PCMD and VCMD
+'          sync position - PCMD is mapped to 0x607A
+'          position - PCMD is mapped to 0x60C1
+'          sync velocity - VCMD is mapped to 0x60FF instead of 0x6081
+
+'          OpMode is set by passing the argument OPMODE_val with the following constants:
+'          CDHD_OPMODE_INTER_POSITION = 7
+'          CDHD_OPMODE_SYNC_POSITION = 8
+'          CDHD_OPMODE_PROFILE_VELOCITY = 3
+
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: drive address
+'          motion_opmode
+'          micro_interpolation  -  by default should be set to 2
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public sub EC_INSTALL_STX_CDHD(byval drive_addr as long, byval vendor_id as long, byval product_code as long,byval motion_opmode as long, byval micro_interpolation as long)
+
+  dim CDHD_OUTPUT_MASK as long = 0xFF0000
+  dim PNUM as long = 0
+  dim pitch as long = 0
+  dim dpitch as double = 0.0
+
+  call EC_CDHD_SET_PDOS(drive_addr, EC_BUSID, EC_ADDRESS_BY_ALIAS, motion_opmode)
+
+  call EC_USE_SLAVE(drive_addr, vendor_id, product_code, "ECAT_AXIS_SLAVE", TRUE)
+
+  '  Micro Interpolation
+  call EC_SDO_WRITE(drive_addr, 0x60C0, 0, 16, micro_interpolation)
+
+  call EC_CDHD_DISABLE_SMOOTHING(drive_addr)
+
+  '  Calculate Position Factor
+  PNUM = EC_SDO_READ(drive_addr, 0x6092, 1)
+  if PNUM < 10000 then
+    print "WARNING: PNUM is smaller than 10000. Low resolution might cause noises"
+  end if
+
+  Pos_Units[drive_addr] = (PNUM / EC_SDO_READ(drive_addr, 0x6092, 2)) * (EC_SDO_READ(drive_addr, 0x6091, 1) / EC_SDO_READ(drive_addr, 0x6091, 2))
+
+  '  Handle linear motor
+  if EC_SDO_READ(drive_addr, 0x2024, 0) = 2 then
+    ' try to read pitch in uM  
+    try 
+      pitch = EC_SDO_READ(drive_addr, 0x2173, 0)
+      dpitch = pitch
+      dpitch = dpitch / 1000.0
+    catch else
+
+    end try
+
+    if pitch = 0 then ' no SDO for pitch in uM
+
+      pitch = EC_SDO_READ(drive_addr, 0x207d, 0)
+      dPitch = pitch
+
+      if pitch > 1000 then 'pitch cannot be 1 meter
+        dpitch = dpitch / 1000.0
+      end if
+
+    end if
+
+    ' in some intermidiate version it was changed to uM
+    Pos_Units[drive_addr] = Pos_Units[drive_addr] / dpitch
+
+  end if
+
+  print "Slave ";drive_addr;": encoder resolution is set"
+
+  ' Map Drive digital IOs to system digital IOs
+  call EC_ASSOCIATE_PDO_TO_SYS_DIO(drive_addr, 0x60FD, 0x0, drive_addr*100, 11, 16)  '  16 - inherent offset in 60FD to digital inputs
+  printu "Drive  # : sys.din. # to sys.din. #" ;drive_addr, drive_addr*100 , drive_addr*100+(11-1)
+  call EC_ASSOCIATE_PDO_TO_SYS_DIO(drive_addr, 0x60FE, 0x1, drive_addr*100, 8, 16)  '  16 - inherent offset in 60FD to digital inputs
+  printu "Drive  # : sys.dout. # to sys.dout. #";drive_addr, drive_addr*100 , drive_addr*100+(8-1)
+
+  'set correct digital outputs mask specifically for CDHD
+  call EC_SDO_WRITE(drive_addr, 0X60FE, 0X2, 32, CDHD_OUTPUT_MASK)
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_SLAVE_HOME
+' Description: This subroutine is CDHD SPECIFIC.
+'     This subroutine is used to start HOMING procedure in a certain CDHD drive
+'      **** INVOKE THIS SUBROUTINE ONLY AFTER TASK HAS ATTACHED TO AXIS ****
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+'                   homingTimeout - Maximum time to try homing procedure (Milliseconds)
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_SLAVE_HOME(ax as generic axis, byval homingTimeout as long)
+
+  dim slaveAddr as long
+  dim currModOp as long  ' current drive's mode of operation
+  dim homingNotDone as long = true
+  dim driveEnabled as long ' flag that indicates the state of the drive one sub is invoked
+  dim IsMapped_0x6060 as long = 0' flag that indicates if object 0x6060 is mapped to a PDO
+  dim IsMapped_0x6061 as long = 0' flag that indicates if object 0x6060 is mapped to a PDO
+  ' homing status
+
+  dim inProgress as long = 0 ' in progress
+  dim throw1 as long = 0
+
+  dim counter as long = 0  '  a counter used to count 10 iterations of sleep when enabling/disabling axis
+  dim retVal as long
+
+  ' Find if objects 0x6060 and 0x6061 are mapped to a PDO
+  if EC_IS_PDO(ax.dadd, 0x6060, 0) then
+    IsMapped_0x6060 = 1
+  end if
+  if EC_IS_PDO(ax.dadd, 0x6061, 0) then
+    IsMapped_0x6061 = 1
+  end if
+
+  'sanity check over input
+  if (homingTimeout < 1) or (homingTimeout > 300000) then
+    throw ec_slave_home_err_timeout
+  end if
+
+  slaveAddr = ax.dadd
+
+  ' check drive's status: enabled/disabled. Save it (in order to
+  ' return the drive in the same status), and disable axis
+  if ax.en = true then
+    driveEnabled = true
+    ax.en = false
+    counter = 0
+    while true = ax.en AND counter < 10
+      sleep 10
+      counter = counter + 1
+    end while
+    if ax.en = true then
+      throw ec_slave_home_err_disable 'failed to disable axis
+    end if
+  end if
+
+  'get current mode of operation, and save it
+  if IsMapped_0x6061 then
+    currModOp = EC_PDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0)
+  else
+    currModOp = EC_SDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0)
+  end if
+
+
+  'set mode of operation = 6 - homing mode
+  if IsMapped_0x6060 then
+    call EC_PDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, CDHD_OPMODE_HOMING)
+  else
+    call EC_SDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, 8, CDHD_OPMODE_HOMING)
+  end if
+
+  'make sure changing opmode was successful. if not - throw an exception  
+  retVal = 0
+  counter = 0
+  while (retVal <> CDHD_OPMODE_HOMING) and (counter < 10)
+
+    if IsMapped_0x6061 then
+      retVal = EC_PDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0)
+    else
+      retVal = EC_SDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0)
+    end if
+
+    sleep 100
+    counter = counter + 1
+
+  end while
+
+  if retVal <> CDHD_OPMODE_HOMING then
+    throw ec_slave_home_err_chgOpMode6 'home_drive_err_chgOpMode6
+  end if
+
+
+  'enter axis into following mode
+  ax.fmode = 2
+
+  'enable drive
+  ax.en = true
+  counter = 0
+  while false = ax.en AND counter < 10
+    sleep 10
+    counter = counter + 1
+  end while
+  if ax.en = false then
+
+    ' Couldn't enable drive. Restore previous opmode and throw an exception
+    if IsMapped_0x6060 then
+      call EC_PDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, currModOp)
+    else
+      call EC_SDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, 8, currModOp)
+    end if
+
+    throw ec_slave_home_err_enable 'failed to enable axis
+
+  end if
+
+
+  ' Poll bit 13 in status word to determine whether CDHD started homing procedure
+  ' If bit 13 is set and object 0x2090 holds 0, homing didn't start due to wrong conditions
+  retVal = 1
+  counter = 0
+  while (retVal = 1) and (counter < 10)
+
+    if ((EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^13) = 0) and \
+    (EC_SDO_READ(slaveAddr, Homing_Status_0X2090, 0) > 0) then
+
+      retVal = 0
+
+    else
+
+      retVal = 1
+      counter = counter + 1
+      sleep 50
+
+    end if
+
+  end while
+
+  if retVal = 1 then
+    throw ec_slave_home_err_not_started
+  end if
+
+
+  'homing procedure started
+  'read status word while homing is not done, and no error occurred
+  inProgress = 1
+  counter = sys.clock ' sample current system clock (in ticks)
+  while homingNotDone AND (homingTimeout > sys.clock - counter)
+
+    'retVal = EC_PDO_READ(slaveAddr, Homing_Status_0X2090, 0)  '  Sample homing status   '  Uncomment when 2090 is mapped to a PDO
+    retVal = EC_SDO_READ(slaveAddr, Homing_Status_0X2090, 0)  '  Sample homing status   '  Remove when 2090 is mapped to a PDO
+    Select Case retVal
+
+      Case 1 to 18 'inProgress  ' Yevgeny 25/06/13 : changed from 20 to 18 according to CDHD changes  (Itai) 
+        sleep 10
+        'print "homing slave ";slaveAddr;". state: ";retVal
+
+      Case 19 ' homeok  ' Yevgeny 25/06/13 : changed from 21 to 19 according to CDHD changes  (Itai) 
+        inProgress = 0
+        homingNotDone = false
+        'print "homing slave ";slaveAddr;". state: ";retVal;" success!"
+
+      Case 20 'homeErrStop ' Yevgeny 25/06/13 : changed from 22 to 20 according to CDHD changes  (Itai) 
+        throw1 = 1
+        'print "homing slave ";slaveAddr;". state: ";retVal;" ERROR ! throwing!"
+
+    End Select
+
+  end while
+
+  if 1 = inProgress then
+    'SHOULD BE REPLACED WITH A THROW ???
+    'retVal = EC_PDO_READ(slaveAddr, Homing_Status_0X2090, 0)  '  Sample homing status   '  Uncomment when 2090 is implemented in PDO
+    retVal = EC_SDO_READ(slaveAddr, Homing_Status_0X2090, 0)  '  Sample homing status   '  Remove when 2090 is implemented in PDO
+    print "Homing interrupted or timed out before procedure was complete. Homing state is ";retVal
+  end if
+
+  'disable drive
+  ax.en = false
+  sleep 500
+  counter = 0
+  while (EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 AND counter < 10 '  while true = ax.en AND counter < 10
+    sleep 100
+    counter = counter + 1
+  end while
+  sleep 100
+  if (EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 then 'if ax.en = true then
+    throw ec_slave_home_err_disable 'failed to disable axis
+  end if
+
+
+  'set mode of operation to original mode
+  if IsMapped_0x6060 then
+    call EC_PDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, currModOp)
+  else
+    call EC_SDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, 8, currModOp)
+  end if
+
+  ' make sure restoring opmode was successful. if not - throw an exception
+  retVal = 0
+  counter = 0
+  while (retVal <> currModOp) and (counter < 10)
+
+    if IsMapped_0x6061 then
+      retVal = EC_PDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0)
+    else
+      retVal = EC_SDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0)
+    end if
+
+    sleep 100
+    counter = counter + 1
+
+  end while
+
+  if retVal <> currModOp then
+    throw ec_slave_home_err_chgOpMode8 'home_drive_err_chgOpMode6
+  end if
+
+
+  ax.fmode = 0
+
+  if 1 = throw1 then
+    throw ec_slave_home_err_unknown
+  end if
+
+  'if drive was enabled when HOME_DRIVE was invoked, enable drive
+  if 0 <> driveEnabled then
+    ax.en = true
+    counter = 0
+    while false = ax.en AND counter < 10
+      sleep 10
+      counter = counter + 1
+    end while
+    if ax.en = false then
+      throw ec_slave_home_err_enable 'failed to enable axis
+    end if
+  end if
+
+end sub
+
+
+
+'***************************************************************************************************************
+' Subroutine Name: EC_GET_CDHD_ERROR_STRING
+' Description: This subroutine is CDHD SPECIFIC. It retrieves CDHD last fault
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave Address
+' Output Parameters: None
+' Return Value: String containing a description of the error
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public function EC_GET_CDHD_ERROR_STRING(byval slaveAddr as long) as string
+
+  dim errCode as long
+
+  dim OVER_CURRENT          as long = 0x2214
+  dim MOTOR_FOLDBACK          as long = 0x2310
+  dim DRIVE_FOLDBACK          as long = 0x2311
+  dim CURRENT_SENSORS          as long = 0x2380 ' Current sensors offset out-of-range
+  dim MOTOR_PHASE            as long = 0x2381
+  dim OVER_VOLTAGE          as long = 0x3110
+  dim UNDER_VOLTAGE          as long = 0x3120
+  dim REGEN_OVER_CURRENT        as long = 0x3180
+  dim STO                as long = 0x3181 ' STO (safe torque off) is not connected
+  dim BUS_VOLTAGE            as long = 0x3182 ' Bus voltage measurement circuit failure
+  dim POWER_MODULE          as long = 0x4080 ' Integrated power module (IPM) over-temperature
+  dim CONTROL_BOARD          as long = 0x4081 ' Control board over-temperature
+  dim DRIVE_OVER_TEMP          as long = 0x3180 ' Drive over-temperature
+  dim MOTOR_OVER_TEMP          as long = 0x4410
+  dim CONTORL_PLUS_VOLT        as long = 0x5111 ' Control +15V out-of-range
+  dim CONTORL_MINUS_VOLT        as long = 0x5112 ' Control -15V out-of-range
+  dim DRIVE_FIVE_VOLT          as long = 0x5180 ' Drive 5V out-of-range
+  dim POWER_BOARD_EEPROM        as long = 0x5530 ' Power board EEPROM fault
+  dim CONTROL_BOARD_EEPROM      as long = 0x5581 ' Control digital board EEPROM fault
+  dim CAN_SUPPLY            as long = 0x5582 ' CAN supply fault
+  dim SELF_TEST            as long = 0x5583 ' Self test failed
+  dim FPGA_VERSION          as long = 0x5584 ' FPGA version mismatch
+  dim PARAM_MEM_CHKSUM        as long = 0x5585 ' Parameter memory checksum failure
+  dim WRITE_FLASH_MEM          as long = 0x5586 ' Failure writing to flash memory
+  dim WATCHDOG_FAULT          as long = 0x6010
+  dim DRIVE_NOT_CONFIG        as long = 0x6381 ' Drive not configured
+  dim FPGA_NOT_CONFIG          as long = 0x6581 ' FPGA configuration failure
+  dim BREAK_FAULT            as long = 0x7110
+  dim INDEX_LINE_BREAK        as long = 0x7111 ' Index line break
+  dim VEL_LIM_EXCEED          as long = 0x7114 ' Velocity Limit exceeded
+  dim ACC_DEC_LIMIT          as long = 0x7115 ' Acceleration/Deceleration limit exceeded
+  dim EC_CABLE_DISCONNECTED      as long = 0x7116
+  dim SECOND_ENC_IDX_BRK        as long = 0x7180 ' Secondary encoder (feedback) index break
+  dim SECOND_ENC_AB_BRK        as long = 0x7181 ' Secondary encoder (feedback) A/B line break
+  dim PULSE_DIR_BRK          as long = 0x7182 ' Pulse & direction input line break
+  dim FBK_COM_ERR            as long = 0x7380 ' Feedback communication error
+  dim NIKON_ENC_FAULT          as long = 0x7381 ' Nikon encoder (feedback) operation fault
+  dim TAMAGAWA_INIT_FAILED      as long = 0x7382 ' Tamagawa feedback initialization failed
+  dim AB_LINE_BREAK          as long = 0x7383 ' A/B Line break
+  dim ILLEGAL_HALLS          as long = 0x7384 ' Illegal Halls
+  dim TAMAGAWA_BATTERY_LOW      as long = 0x7385 ' Tamagawa battery low voltage
+  dim PLL_SYNC_FAILED          as long = 0x7386 ' PLL synchronization failed
+  dim CURR_LOOP_AUTO          as long = 0x7780 ' Current loop autotuning failed
+  dim MOTOR_SETUP            as long = 0x7781 ' Motor setup failed
+  dim PHASE_FIND            as long = 0x7782 ' Phase find failed
+  dim ENC_SIM_FREQ_HIGH        as long = 0x7783 ' Encoder simulation frequency too high
+  dim ENDAT_SINE_COM          as long = 0x7784 ' EnDat sine (feedback) communication failed
+  dim AB_RANGE            as long = 0x7785 ' A/B out-of-range
+  dim SINE_ENC            as long = 0x7786 ' Sine encoder quadrature
+  dim SINE_COS_CALIB          as long = 0x7787 ' Sine/cosine calibration invalid
+  dim ENC_FIVE_OVER          as long = 0x7788 ' Encoder (feedback) 5V over-current
+  dim SEC_ENC_FIVE_OVER        as long = 0x7789 ' Secondary encoder (feedback) 5V over-current
+  dim SENS_INIT            as long = 0x778A ' Sensorless initialization
+  dim RES_INIT            as long = 0x778B ' Resolver initialization failed
+  dim CAN_HEARTBEAT          as long = 0x8130 ' CAN heartbeat lost
+  dim DRIVE_LOCKED          as long = 0x8180 ' Drive locked
+  dim VEL_OVER_SPEED          as long = 0x8481 ' Velocity over-speed exceeded
+  dim MAX_POS_ERROR          as long = 0x8611 ' Maximum position error exceeded
+  dim NO_FAULT            as long = 0x00
+
+  'read object 0x603F to retrieve the last fault code
+  errCode = EC_SDO_READ(slaveAddr, LAST_FAULT_INDEX_0X603F, LAST_FAULT_SUBINDEX_0X0)
+
+  select case errCode
+
+    case OVER_CURRENT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Over Current"
+    case MOTOR_FOLDBACK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Motor Foldback"
+    case DRIVE_FOLDBACK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Drive Foldback"
+    case CURRENT_SENSORS
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Current sensors offset out-of-range"
+    case MOTOR_PHASE
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Motor Phase"
+    case OVER_VOLTAGE
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Over Voltage"
+    case UNDER_VOLTAGE
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Under Voltage"
+    case REGEN_OVER_CURRENT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Regen Over Current"
+    case STO
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : STO (safe torque off) is not connected"
+    case BUS_VOLTAGE
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Bus voltage measurement circuit failure"
+    case POWER_MODULE
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Integrated power module (IPM) over-temperature"
+    case CONTROL_BOARD
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Control board over-temperature"
+    case DRIVE_OVER_TEMP
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Drive over-temperature"
+    case MOTOR_OVER_TEMP
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Motor over-temperature"
+    case CONTORL_PLUS_VOLT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Control +15V out-of-range"
+    case CONTORL_MINUS_VOLT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Control -15V out-of-range"
+    case DRIVE_FIVE_VOLT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Drive 5V out-of-range"
+    case POWER_BOARD_EEPROM
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Power board EEPROM fault"
+    case CONTROL_BOARD_EEPROM
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Control digital board EEPROM fault"
+    case CAN_SUPPLY
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : CAN supply fault"
+    case SELF_TEST
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Self test failed"
+    case FPGA_VERSION
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : FPGA version mismatch"
+    case PARAM_MEM_CHKSUM
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Parameter memory checksum failure"
+    case WRITE_FLASH_MEM
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Failure writing to flash memory"
+    case WATCHDOG_FAULT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Watchdog Fault"
+    case DRIVE_NOT_CONFIG
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Drive not configured"
+    case FPGA_NOT_CONFIG
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : FPGA configuration failure"
+    case BREAK_FAULT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Break Fault"
+    case INDEX_LINE_BREAK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Index line break"
+    case EC_CABLE_DISCONNECTED
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : EtherCAT cable disconnected"
+    case SECOND_ENC_IDX_BRK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Secondary encoder (feedback) index break"
+    case SECOND_ENC_AB_BRK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Secondary encoder (feedback) A/B line break"
+    case PULSE_DIR_BRK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Pulse & direction input line break"
+    case FBK_COM_ERR
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Feedback communication error"
+    case NIKON_ENC_FAULT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Nikon encoder (feedback) operation fault"
+    case TAMAGAWA_INIT_FAILED
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Tamagawa feedback initialization failed"
+    case AB_LINE_BREAK
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : A/B Line break"
+    case ILLEGAL_HALLS
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Illegal Halls"
+    case TAMAGAWA_BATTERY_LOW
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Tamagawa battery low voltage"
+    case PLL_SYNC_FAILED
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : PLL synchronization failed"
+    case CURR_LOOP_AUTO
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Current loop autotuning failed"
+    case MOTOR_SETUP
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Motor setup failed"
+    case PHASE_FIND
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Phase find failed"
+    case ENC_SIM_FREQ_HIGH
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Encoder simulation frequency too high"
+    case ENDAT_SINE_COM
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : EnDat sine (feedback) communication failed"
+    case AB_RANGE
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : A/B out-of-range"
+    case SINE_ENC
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Sine encoder quadrature"
+    case SINE_COS_CALIB
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Sine/cosine calibration invalid"
+    case ENC_FIVE_OVER
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Encoder (feedback) 5V over-current"
+    case SEC_ENC_FIVE_OVER
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Secondary encoder (feedback) 5V over-current"
+    case SENS_INIT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Sensorless initialization"
+    case RES_INIT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Resolver initialization failed"
+    case CAN_HEARTBEAT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : CAN heartbeat lost"
+    case DRIVE_LOCKED
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Drive locked"
+    case VEL_OVER_SPEED
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Velocity over-speed exceeded"
+    case MAX_POS_ERROR
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Maximum position error exceeded"
+    case ACC_DEC_LIMIT
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Acceleration/Deceleration limit exceeded"
+    case VEL_LIM_EXCEED  
+      EC_GET_CDHD_ERROR_STRING = "drive fault in slave " + str$(slaveAddr) + " : Velocity Limit exceeded"
+    case NO_FAULT
+      EC_GET_CDHD_ERROR_STRING = "No drive fault in slave " + str$(slaveAddr)
+    case else
+      EC_GET_CDHD_ERROR_STRING =  "drive fault number " +str$(errCode) +" in slave " + str$(slaveAddr) + " : description N/A"
+
+  end select
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_ERROR
+' Description: copied from  EC_SLAVE_GET_ERROR . Returns the error code saved in the drive in case of an internal error
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value:    Error code
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_ERROR(Ax as generic axis) as string
+
+  dim err as long = 0
+
+  err = EC_SDO_READ(Ax.DAdd, ErrorCode_603Fh, 0)
+  EC_CDHD_GET_ERROR = EC_GET_CDHD_ERROR_STRING(ax.dadd)
+
+end function
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_ANIN1
+' Description: Read value of analog input1 over PDO, convert result to signed long
+' Called From: 
+' Author: Rasty
+' Input Parameters: 
+' Output Parameters: None
+' Return Value:    Error code
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_ANIN1(Ax as generic axis) as long
+
+  EC_CDHD_GET_ANIN1=ec_pdo_read(ax.dadd,0x20f2,0)
+  if EC_CDHD_GET_ANIN1 BAND 0x8000 then
+    EC_CDHD_GET_ANIN1 = EC_CDHD_GET_ANIN1 BOR 0xFFFF8000
+  end if
+
+end function
+'****************************************************************************
+' Function Name: EC_CDHD_GET_ANIN2
+' Description: Read value of analog input 2 over PDO, convert result to signed long
+' Called From: 
+' Author: Rasty
+' Input Parameters: 
+' Output Parameters: None
+' Return Value:    Error code
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_ANIN2(Ax as generic axis) as long
+  EC_CDHD_GET_ANIN2=ec_pdo_read(ax.dadd,0x20f9,0)
+  if EC_CDHD_GET_ANIN2 BAND 0x8000 then
+    EC_CDHD_GET_ANIN2 = EC_CDHD_GET_ANIN2 BOR 0xFFFF8000
+  end if 
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_DRIVE_ID
+' Description: Return the drive?s ID as it is set by the rotary switches
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value: long - drive ID
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_DRIVE_ID(Ax as generic axis) as long
+
+  dim retVal as long = 0
+  dim low_mask as long = 0xf
+  dim high_mask as long = 0xf00
+
+  retVal = ec_sdo_read(Ax.dadd, 0x20E1, 0) 
+  EC_CDHD_GET_DRIVE_ID = (((retVal band high_mask) SHR 8) * 10) + (retVal band low_mask)
+
+end function
+
+
+public function EC_CDHC_GET_KNLUSERGAIN(Ax as generic axis) as  double
+  EC_CDHC_GET_KNLUSERGAIN = EC_SDO_READ_DOUBLE(ax.dadd,0x201b,0,32)
+end function
+
+public sub EC_CDHC_SET_KNLUSERGAIN(Ax as generic axis,byval v as double) 
+  call EC_SDO_WRITE_DOUBLE(ax.dadd,0x201b,0,32, v)
+end sub
+
+
+
+public sub EC_CDHD_ALL_KNLUSERGAIN(byval v as double)
+  dim i as long
+  for i = 1 to sys.NAxes 
+    call EC_SDO_WRITE_DOUBLE(i,0x201b,0,32, v)
+  next
+end sub
+
+
+public function EC_CDHD_GET_MICONT(Ax as generic axis) as  long ' Returns in mA
+  EC_CDHD_GET_MICONT = EC_SDO_READ(ax.dadd,0X6075,0)
+end function
+
+public function EC_CDHD_GET_MIPEAK(Ax as generic axis) as  long ' Returns in mA
+  EC_CDHD_GET_MIPEAK = EC_SDO_READ(ax.dadd,0x2036,0)
+end function
+
+public function EC_CDHD_GET_MKT(Ax as generic axis) as  double ' Returns in mA
+  EC_CDHD_GET_MKT = EC_SDO_READ_DOUBLE(ax.dadd,0x2039,0,32)
+end function
+
+public function EC_CDHD_GET_ILIM(Ax as generic axis) as  double
+  EC_CDHD_GET_ILIM = (EC_SDO_READ(ax.dadd,0X6073,0)/1000.0)*(EC_CDHD_GET_MICONT(ax)/1000.0)
+end function
+
+public sub EC_CDHD_SET_ILIM(Ax as generic axis,byval v as double) 
+  call EC_SDO_WRITE(ax.dadd,0X6073,0,16, int(v*1000000/EC_CDHD_GET_MICONT(ax)))
+end sub
+
+public function EC_CDHD_GET_IMAX(Ax as generic axis) as  long
+  EC_CDHD_GET_IMAX = EC_SDO_READ(ax.dadd,0X20f0,0)
+end function
+
+
+'****************************************************************************
+' Function Name: EC_CDHD_SET_THERMTYPE
+' Description: sets the value of THERMTYPE
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis, value
+' Output Parameters: None
+' Return Value: 
+' Algorithm: SDO write  0X20CA
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub  EC_CDHD_SET_THERMTYPE(Ax as generic axis, byval V as long)
+  call EC_SDO_WRITE(Ax.Dadd, 0X20CA, 0, 16, V  )  '  via RS232, THERMTYPE
+end sub
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_THERMTYPE
+' Description: Return the value of THERMTYPE
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value: THERMTYPE
+' Algorithm: SDO read 0X20CA
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_THERMTYPE(Ax as generic axis) as  long
+  EC_CDHD_GET_THERMTYPE = EC_SDO_READ(ax.dadd,0X20CA,0)  '  via RS232, THERMTYPE
+end function
+
+'****************************************************************************
+' Function Name: EC_CDHD_SET_THERMODE
+' Description: sets the value of THERMODE
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis, value
+' Output Parameters: None
+' Return Value: 
+' Algorithm: SDO write  0X20C6
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub  EC_CDHD_SET_THERMODE(Ax as generic axis, byval V as long)
+  call EC_SDO_WRITE(Ax.Dadd, 0X20C6, 0, 16, V  )  '  via RS232, THERMODE
+end sub
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_THERMODE
+' Description: Return the value of THERMODE
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value: THERMODE
+' Algorithm: SDO read 0X20C6
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_THERMODE(Ax as generic axis) as  long
+  EC_CDHD_GET_THERMODE = EC_SDO_READ(ax.dadd,0X20C6,0)  '  via RS232, THERMODE
+end function
+
+'****************************************************************************
+' Function Name: EC_CDHD_SET_THERMTRIPLEVEL
+' Description: sets the value of THERMTRIPLEVEL
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis, value
+' Output Parameters: None
+' Return Value: 
+' Algorithm: SDO write  0X20C9
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub  EC_CDHD_SET_THERMTRIPLEVEL(Ax as generic axis, byval V as long)
+  call EC_SDO_WRITE(Ax.Dadd, 0X20C9, 0, 32, V  )  '  via RS232, THERMTRIPLEVEL
+end sub
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_THERMTRIPLEVEL
+' Description: Return the value of THERMTRIPLEVEL
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value: THERMTRIPLEVEL
+' Algorithm: sdo read   0X20C9
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_THERMTRIPLEVEL(Ax as generic axis) as  long
+  EC_CDHD_GET_THERMTRIPLEVEL = EC_SDO_READ(ax.dadd,0X20C9,0)  '  via RS232, THERMTRIPLEVEL
+end function
+
+'****************************************************************************
+' Function Name: EC_CDHD_SET_THERMCLEARLEVEL
+' Description: sets the value of THERMCLEARLEVEL
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis, value
+' Output Parameters: None
+' Return Value: 
+' Algorithm: SDO_WRITE  0X20C5
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub  EC_CDHD_SET_THERMCLEARLEVEL(Ax as generic axis, byval V as long)
+  call EC_SDO_WRITE(Ax.Dadd, 0X20C5, 0, 32, V  )  '  via RS232, THERMCLEARLEVEL
+end sub
+
+'****************************************************************************
+' Function Name: EC_CDHD_GET_THERMCLEARLEVEL
+' Description: Return the value of THERMCLEARLEVEL
+' Called From: 
+' Author: Eran Korkidi 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value: THERMCLEARLEVEL
+' Algorithm: SDO read 0X20C5
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_CDHD_GET_THERMCLEARLEVEL(Ax as generic axis) as  long
+  EC_CDHD_GET_THERMCLEARLEVEL = EC_SDO_READ(ax.dadd,0X20C5,0)  '  via RS232, THERMCLEARLEVEL
+end function
+
+
+
+public function EC_CDHD_GETMPITCH(AX as generic axis) as long
+  EC_CDHD_GETMPITCH = EC_SDO_READ(ax.dadd, 0x207d, 0)
+end function  
+
+
+'****************************************************************************
+' Function Name: EC_CDHD_PHASEFIND
+' description: Initiates a procedure that initializes commutation for incremental encoder systems.
+'              See PHASEFINDMODE for the execution options.
+' Note:        Although highly unlikely, it is possible that PHASEFIND will produce an incorrect commutation angle,
+'              resulting in a runaway condition. Therefore, when using the PHASEFIND procedure, 
+'              it is strongly recommended that the runaway detection mechanism be enabled by setting 
+'              appropriate values for RATTHRESH and RAVTHRESH.
+' Drive status:Disabled
+' Called From: 
+' Author: Mirko Borich 
+' Input Parameters: Axis , value
+' Output Parameters: None
+' Definition:  Phase Find Command
+' Type:        Command
+'***********************************************************************************
+public sub EC_CDHD_PHASEFIND(AX as generic axis,byval v as long)
+  call EC_SDO_WRITE(ax.dadd, 0x20a4, 0, 8, v)
+end sub  
+
+
+
+'****************************************************************************
+' Function Name: EC_CDHD_PHASEFINDST
+' description: Indicates the state of the commutation Phase Find procedure for incremental encoders.
+'
+' Drive status:Disabled
+' Called From: 
+' Author: Mirko Borich 
+' Input Parameters: Axis 
+' Output Parameters: 
+'       0 = Not started
+'       1 = Running 
+'       2 = Succeeded
+'       3 = Failed
+' Definition:  Phase Find Status
+' Type:        Variable
+'***********************************************************************************
+public function EC_CDHD_PHASEFINDST(AX as generic axis) as long
+  EC_CDHD_PHASEFINDST = EC_SDO_READ(ax.dadd, 0x20a9, 0)
+end function  
+
+
+'****************************************************************************
+' Function Name: EC_CDHD_DISABLE_SMOOTHING
+' Description: disable smoothing from drive side. this is a work around for false smoothing in CDHD
+' Called From: local
+' Author: Eran Korkidi 
+' Input Parameters: Axis.Dadd
+' Output Parameters: return value from EC_SDO_WRITE()
+' Return Value: 
+' Algorithm: writes 0 to SOD 0x2109
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+sub EC_CDHD_DISABLE_SMOOTHING(byval lDriveAddress as long)
+  call EC_SDO_WRITE(lDriveAddress, 0X2109, 0, 16, 0 )
+end sub
+
+
+
+'****************************************************************************
+' Function Name: EC_REMAP_CDHD_DEFAULT_PDOS
+' Description: This subroutine creates the default PDO mapping of the
+'         CDHD FW version 1.15.34
+' Called From: EC_SETUP.PRG
+' Author: Nir Geller
+' Input Parameters: Slave address
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+Public Sub EC_REMAP_CDHD_DEFAULT_PDOS(byval drive_addr as long)
+
+  dim retVal as long = 0
+
+  '********************************************************************
+  '             Set Rx PDOs
+  '********************************************************************
+
+  ' Zero number of entries in sync manager 2
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 0, 8, 0)
+
+  ' Set Rx PDO Entries object
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 1, 16, 0x1600)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 2, 16, 0x1601)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 3, 16, 0x1602)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 4, 16, 0x1603)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 0, 8, 4)
+
+
+' 0x1600
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 0, 8, 0)
+
+  ' Set ControlWord
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 1, 32, 0x60400010)
+
+  ' Set Write OpMode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 2, 32, 0x60600008)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 0, 8, 2)
+
+
+' 0x1601
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 0, 8, 0)
+  
+  ' Set Position Command in sync position mode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 1, 32, 0x607A0020)
+
+  ' Set Velocity Command in sync position mode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 2, 32, 0x60810020)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 0, 8, 2)
+
+
+' 0x1602
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1602, 0, 8, 0)
+  
+  ' Set Velocity Command in velocity mode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1602, 1, 32, 0x60FF0020)
+
+  ' Set Position Command in velocity mode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1602, 2, 32, 0x60C10120)
+
+  ' Set Additive velocity command
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1602, 3, 32, 0x60B10020)
+  
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1602, 0, 8, 3)
+
+
+' 0x1603
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1603, 0, 8, 0)
+  
+  ' Set Torque Command
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1603, 1, 32, 0x60710010)
+
+  ' Set Digital Outputs
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1603, 2, 32, 0x60FE0120)
+
+  ' Set Additive Torque Command
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1603, 3, 32, 0x60B20010)
+
+  ' Set Analog Output Command
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1603, 4, 32, 0x21340020)
+    
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1603, 0, 8, 4)
+
+
+  '********************************************************************
+  '             Set Tx PDOs
+  '********************************************************************
+
+  ' Zero number of entries in sync manager 3
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 0, 8, 0)
+
+  ' Set Tx PDO Entries object
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 1, 16, 0x1A00)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 2, 16, 0x1A01)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 3, 16, 0x1A02)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 4, 16, 0x1A03)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 0, 8, 4)
+
+
+' 0x1A00
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 0, 8, 0)
+
+  ' Set StatusWord
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 1, 32, 0x60410010)
+
+  ' Set Read OpMode
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 2, 32, 0x60610008)
+
+  ' Set Torque Actual Value  - *NOT* USED AS TORQUEFEEDBACK
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 3, 32, 0x60770010)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 0, 8, 3)
+
+
+' 0x1A01
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 0, 8, 0)
+
+  ' Set Position Feedback
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 1, 32, 0x60640020)
+
+  ' Set Velocity Feedback
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 2, 32, 0x606C0020)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 0, 8, 2)
+
+
+' 0x1A02
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A02, 0, 8, 0)
+
+  ' Set Current Actual Value  - USED AS TORQUEFEEDBACK
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A02, 1, 32, 0x60780010)
+
+  ' Set Torque Demand
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A02, 2, 32, 0x60740010)
+
+  ' Set Analog Input 1
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A02, 3, 32, 0x20F20010)
+
+  ' Set Analog Input 2
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A02, 4, 32, 0x20F90010)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A02, 0, 8, 4)
+
+
+' 0x1A03
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A03, 0, 8, 0)
+
+  ' Set Digital Inputs
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A03, 1, 32, 0x60FD0020)
+
+  ' Set Machine Hardware Position External 
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A03, 2, 32, 0x20B60020)
+
+  ' Set Following Error Actual Value
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A03, 3, 32, 0x60F40020)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A03, 0, 8, 3)
+
+
+  ' Invoke EC_RESCAN_SLAVES after done remapping ALL the drives, not after each and every drive...
+  'retVal = EC_RESCAN_SLAVES
+
+End Sub
+
+
+
+'****************************************************************************
+' Function Name: EC_REMAP_CDHD_MINIMUM_PDOS
+' Description: THIS FUNCTION MAPS THE MINIMUM REQUIRED PDOS OF A DRIVE
+'        - CONTROL WORD
+'        - STATUS WORD
+'        - PCMD
+'        - VCMD
+'        - PFB
+'        - Digital Inputs
+'        - Digital Outputs
+'        - Modes Of Operation
+'
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Slave address
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+Public Sub EC_REMAP_CDHD_MINIMUM_PDOS(byval drive_addr as long)
+
+  dim retVal as long = 0
+
+  '********************************************************************
+  '             Set Rx PDOs
+  '********************************************************************
+
+  ' Zero number of entries in sync manager 2
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 0, 8, 0)
+
+  ' Set Rx PDO Entries object
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 1, 16, 0x1600)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 2, 16, 0x1601)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 0, 8, 2)
+
+
+' 0x1600
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 0, 8, 0)
+
+  ' Set ControlWord
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 1, 32, 0x60400010)
+
+  ' Set Write OpMode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 2, 32, 0x60600008)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 0, 8, 2)
+
+
+' 0x1601
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 0, 8, 0)
+  
+  ' Set Position Command in sync position mode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 1, 32, 0x607A0020)
+
+  ' Set Velocity Command in sync position mode
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 2, 32, 0x60810020)
+
+  ' Set Digital Outputs
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 3, 32, 0x60FE0120)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1601, 0, 8, 3)
+
+
+  ' ADD HERE ADDITIONAL PDOS TO OBJECTS 1600-3
+  ' **
+  ' **
+  ' **
+
+
+  '********************************************************************
+  '             Set Tx PDOs
+  '********************************************************************
+
+  ' Zero number of entries in sync manager 3
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 0, 8, 0)
+
+  ' Set Tx PDO Entries object
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 1, 16, 0x1A00)
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 2, 16, 0x1A01)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 0, 8, 2)
+
+
+' 0x1A00
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 0, 8, 0)
+
+  ' Set StatusWord
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 1, 32, 0x60410010)
+
+  ' Set Read OpMode
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 2, 32, 0x60610008)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 0, 8, 2)
+
+
+' 0x1A01
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 0, 8, 0)
+
+  ' Set Position Feedback
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 1, 32, 0x60640020)
+
+  ' Set Velocity Feedback
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 2, 32, 0x60FD0020)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A01, 0, 8, 2)
+
+
+  ' ADD HERE ADDITIONAL PDOS TO OBJECTS 1A00-3
+  ' **
+  ' **
+  ' **
+  
+  'retVal = EC_RESCAN_SLAVES
+
+End Sub
+
+
+
+'****************************************************************************
+' Function Name: Slave_diagnostic
+' Description:
+' Author: Yonathan Klein 
+' Input Parameters: Slave address
+' Output Parameters: String for diagnostic of the drive
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+
+
+public Function Slave_diagnostic(byval slave_address as long) as string 
+
+  dim error_string as string =""
+  dim i as long = 1 
+  dim description as string = ""
+  dim error_hex as long 
+  dim fault_check as string
+  dim fault_check_string as string = ""
+  dim warning_str as string = ""
+  dim Slave_diagnostic_inter as string = "" 
+  dim REG_warning as string = ""
+  error_string = EC_GET_CDHD_ERROR_STRING(slave_address)
+  
+  fault_check = bin$(EC_SDO_READ(slave_address,0X6041,0))
+  'fault_check_string = str$(fault_check)
+  if mid$(fault_check,12,1) = "0" then
+  
+    Slave_diagnostic_inter =  "No Error$$$$$Black"
+    
+  else  
+  
+    if mid$(error_string,i,2) = "No"  then
+      
+      Slave_diagnostic_inter =  "No Error$$$$$Black" 
+    
+    else
+    
+      error_hex = EC_SDO_READ(Slave_address, 0x603f,0)        
+      
+      while mid$(error_string,i,1) <> ":"           
+        i = i + 1 
+      end while
+      i = i+1
+      
+      description = description + mid$(error_string,i,40)
+      
+      Slave_diagnostic_inter =  "Error$" + HEX$(error_hex) + "$" + description + "$$$Red" 
+    end if
+  end if   
+  
+   warning_str = num_of_warnings(slave_address)
+  'warning_str = drive_warning(slave_address)
+  REG_warning = Slave_REGS(slave_address)
+slave_diagnostic = "Errors:$$$$$" + CHR$(13) + CHR$(10) + Slave_diagnostic_inter + CHR$(13) + CHR$(10) + "Warnings:$$$$$" + CHR$(13) + CHR$(10) + warning_str + CHR$(13) + CHR$(10) + "Bus Errors:$$$$$" + CHR$(13) + CHR$(10) + REG_warning 
+end function
+
+
+'****************************************************************************
+' Function Name: Drive_warning
+' Description:
+' Author: Yonathan Klein 
+' Input Parameters: Slave address
+' Output Parameters: String for diagnostic of the drive
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+
+
+public Function Drive_warning(byval slave_address as long) as string 
+
+  dim warning_string as long 
+  dim warning_string_2 as long
+
+  dim STO_Warning                                           as long = 1
+  dim Drive_Foldback_Warning                                as long = 2
+  dim Motor_Foldback_Warning                                as long = 4
+  dim Under_Voltage                                         as long = 8
+  dim Power_Stage_Over_Temperature                          as long = 16
+  dim Motor_Over_Temperature                                as long = 32
+  dim Control_Board_Over_Temperature                        as long = 256
+  dim Phase_Find_Required                                   as long = 512
+  dim PLL_No_Synchronized                                   as long = 1024 
+  dim Hardware_Positive_Limit_Switch                        as long = 16384 
+  dim Hardware_Negative_Limit_Switch                        as long = 32768
+  dim Hardware_Positive_and_Negative                        as long = 65536
+  dim Software_Positive_Limit_Switch                        as long = 131072
+  dim Software_Negative_Limit_Switch                        as long = 262144
+  dim Software_Limit_Switches_are                           as long = 524288
+  dim HIPERFACE_Encoder_Resolution                          as long = 1048576 
+  dim Tamagawa_Battery_Low_Voltage                          as long = 2097152 
+  dim EnDat_Encoder_Resolution                              as long = 8388608
+  dim PFB_Backup_No_Read                                    as long = 16777216
+  dim Offset_and_or_Gain                                  as long = 33554432
+  dim Bus_AC_Supply_Line                                    as long = 1073741824
+  dim Regen_Resistor_Overload                               as long = 2 
+  dim Encoder_Warning                                       as long = 4
+  dim Realtime_Overload_Warning                             as long = 8
+  dim Cannot_Use_SFBTYPE_1                                  as long = 16
+  dim Integrated_Power_Module                               as long = 32
+  dim PDO_Packet_Is_Not                                     as long = 64 
+  dim Online_LMJR_Estimation_Active                         as long = 128
+  dim PDO_Packet_Is_Not_In                                  as long = 256 
+  dim Data_in_RPDO_is_Out_of_Range                          as long = 512 
+  dim Data_Cannot_Be_Written                                as long = 1024
+  dim Command_is_Toward                                     as long = 2048
+  dim Command_is_Toward_2                                   as long = 4096
+  dim CAN_Communication                                     as long = 8192 
+
+  warning_string = EC_SDO_READ(slave_address, 0x2011, 1)
+
+  select case warning_string
+  
+    case STO_Warning 
+      Drive_warning = "Warninng$1$STO_Warning$orange"
+    case Drive_Foldback_Warning  
+      Drive_warning = "Warning$2$Drive_Foldback_Warning$orange"
+    case Motor_Foldback_Warning
+      Drive_warning = "warning$3$Motor_Foldback_Warning$orange"
+    case Under_Voltage
+      Drive_warning = "Warning$4$Under_Voltage$orange"
+    case Power_Stage_Over_Temperature
+      drive_warning = "Warning$5$Power_Stage_Over_Temperature$orange"
+    case Motor_Over_Temperature
+      drive_warning = "Warning$6$Motor_Over_Temperature$orange"
+    case Control_Board_Over_Temperature
+      drive_warning ="Warning$9$Control_Board_Over_Temperature$orange"
+    case Phase_Find_Required
+      drive_warning = "Warning$10$Phase_Find_Required$orange"
+    case PLL_No_Synchronized
+      drive_warning = "Warning$11$PLL_No_Synchronized$orange"
+    case Hardware_Positive_Limit_Switch
+      drive_warning = "Warning$15$Hardware_Positive_Limit_Switch_Open$orange"
+    case Hardware_Negative_Limit_Switch
+      drive_warning = "Warning$16$Hardware_Negative_Limit_Switch_is_Open$orange"
+    case Hardware_Positive_and_Negative
+      drive_warning = "Warning$17$Hardware_Positive_and_Negative_Limit_Switches_are_Open$orange"
+    case Software_Positive_Limit_Switch
+      drive_warning = "Warning$18$Software_Positive_Limit_Switch_is_Tripped$orange"
+    case Software_Negative_Limit_Switch
+      drive_warning = "Warning$19$Software_Negative_Limit_Switch_is_Tripped$orange"
+    case  Software_Limit_Switches_are
+      drive_warning = "Warning$20$Software_Limit_Switches_are_Tripped$orange"
+    case HIPERFACE_Encoder_Resolution
+      drive_warning = "Warning$21$HIPERFACE_Encoder_Resolution_Mismatch$orange"
+    case Tamagawa_Battery_Low_Voltage
+      drive_warning = "Warning$22$Tamagawa_Battery_Low_Voltage$orange"
+    case EnDat_Encoder_Resolution 
+      drive_warning ="Warning$24$EnDat_Encoder_Resolution_Mismatch$orange"
+    case PFB_Backup_No_Read
+      drive_warning = "Warning$25$PFB_Backup_No_Read$orange"
+    case Offset_and_or_Gain
+      drive_warning = "Warning$27$Offset_and_or_Gain_Adjustment_Values_Detected_After_SININIT$orange"
+    case Bus_AC_Supply_Line 
+      drive_warning = "Warning$32$Bus_AC_Supply_Line_Disconnected$orange"
+
+    case 0x0
+      warning_string_2 = EC_SDO_READ(slave_address, 0x2011, 2)
+
+      select case warning_string_2
+      
+        case Regen_Resistor_Overload
+          drive_warning = "Warning$34$Regen_Resistor_Overload$orange"
+        case Encoder_Warning 
+          drive_warning = "Warning$35$Encoder_Warning$orange"
+        case Realtime_Overload_Warning 
+          drive_warning = "Warning$36$Realtime_Overload_Warning$orange"
+        case Cannot_Use_SFBTYPE_1
+          drive_warning = "Warning$37$Cannot_Use_SFBTYPE_1_with_Analog_OPMODE$orange"
+        case Integrated_Power_Module
+          drive_warning = "Warning$38$Integrated_Power_Module_Over_Temperature$orange"
+        case PDO_Packet_Is_Not 
+          drive_warning = "Warning$39$PDO_Packet_Is_Not_In_The_Expected_Length_too_short$orange"
+        case Online_LMJR_Estimation_Active
+          drive_warning = "Warning$40$Online_LMJR_Estimation_Active$orange"
+        case PDO_Packet_Is_Not_In
+          drive_warning = "Warning$41$PDO_Packet_Is_Not_In_The_Expected_Length_too_long$orange"
+        case Data_in_RPDO_is_Out_of_Range
+          drive_warning = "Warning$42$Data_in_RPDO_is_Out_of_Range$orange"
+        case Data_Cannot_Be_Written 
+          drive_warning = "Warning$43$Data_Cannot_Be_Written_When_Drive_is_Enabled$orange"
+        case Command_is_Toward
+          drive_warning = "Warning$44$Command_is_Toward_Positive_Software_Limit$orange"
+        case Command_is_Toward_2
+          drive_warning = "Warning$45$Command_is_Toward_Negative_Software_Limit$orange"
+        case CAN_Communication
+          drive_warning = "Warning$46$CAN_Communication_entered_passive_state$orange"
+        case 0x0
+          drive_warning = "No Warning$$$black"
+      end select 
+  end select 
+
+end function
+'****************************************************************************
+' Function Name: Drive_warning
+' Description:
+' Author: Yonathan Klein 
+' Input Parameters: Slave address
+' Output Parameters: String for diagnostic of the drive
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function num_of_warnings(byval slave_address as long) as string 
+  
+  dim i as long = 1
+  dim bin_num as string = ""
+  dim length as long = 0
+  dim num_warning as long = 0
+  dim warn as long = 0
+  dim drive_warning2 as string = ""
+  dim drive_warning1 as string = ""
+  
+  dim STO_Warning                                           as long = 1
+  dim Drive_Foldback_Warning                                as long = 2
+  dim Motor_Foldback_Warning                                as long = 3
+  dim Under_Voltage                                         as long = 4
+  dim Power_Stage_Over_Temperature                          as long = 5
+  dim Motor_Over_Temperature                                as long = 6
+  dim Control_Board_Over_Temperature                        as long = 9
+  dim Phase_Find_Required                                   as long = 10
+  dim PLL_No_Synchronized                                   as long = 11 
+  dim Hardware_Positive_Limit_Switch                        as long = 15 
+  dim Hardware_Negative_Limit_Switch                        as long = 16
+  dim Hardware_Positive_and_Negative                        as long = 17
+  dim Software_Positive_Limit_Switch                        as long = 18
+  dim Software_Negative_Limit_Switch                        as long = 19
+  dim Software_Limit_Switches_are                           as long = 20
+  dim HIPERFACE_Encoder_Resolution                          as long = 21 
+  dim Tamagawa_Battery_Low_Voltage                          as long = 22
+  dim EnDat_Encoder_Resolution                              as long = 24
+  dim PFB_Backup_No_Read                                    as long = 25
+  dim Offset_and_or_Gain                                  as long = 27
+  dim Bus_AC_Supply_Line                                    as long = 32
+  dim Regen_Resistor_Overload                               as long = 34
+  dim Encoder_Warning                                       as long = 35
+  dim Realtime_Overload_Warning                             as long = 36
+  dim Cannot_Use_SFBTYPE_1                                  as long = 37
+  dim Integrated_Power_Module                               as long = 38
+  dim PDO_Packet_Is_Not                                     as long = 39 
+  dim Online_LMJR_Estimation_Active                         as long = 40
+  dim PDO_Packet_Is_Not_In                                  as long = 41 
+  dim Data_in_RPDO_is_Out_of_Range                          as long = 42 
+  dim Data_Cannot_Be_Written                                as long = 43
+  dim Command_is_Toward                                     as long = 44
+  dim Command_is_Toward_2                                   as long = 45
+  dim CAN_Communication                                      as long = 47
+  
+  num_warning = ec_sdo_read(slave_address,0x2011,1)
+  bin_num = bin$(num_warning)
+  
+  'for example num_warning = 1024
+  'bin_num = 10000000000
+  
+  length = LEN(bin_num)
+  
+  select case length
+    case STO_Warning 
+          if num_warning =1 then
+            Drive_warning1 = "Warninng$1$STO_Warning$$$orange"
+          else
+            Drive_warning1 = "No Warning$$$$$black"
+          end if
+    case Drive_Foldback_Warning  
+      Drive_warning1 = "Warning$2$Drive_Foldback_Warning$$$orange"
+    case Motor_Foldback_Warning
+      Drive_warning1 = "warning$3$Motor_Foldback_Warning$$$orange"
+    case Under_Voltage
+      Drive_warning1 = "Warning$4$Under_Voltage$$$orange"
+    case Power_Stage_Over_Temperature
+      drive_warning1 = "Warning$5$Power_Stage_Over_Temperature$$$orange"
+    case Motor_Over_Temperature
+      drive_warning1 = "Warning$6$Motor_Over_Temperature$$$orange"
+    case Control_Board_Over_Temperature
+      drive_warning1 ="Warning$9$Control_Board_Over_Temperature$$$orange"
+    case Phase_Find_Required
+      drive_warning1 = "Warning$10$Phase_Find_Required$$$orange"
+    case PLL_No_Synchronized
+      drive_warning1 = "Warning$11$PLL_No_Synchronized$$$orange"
+    case Hardware_Positive_Limit_Switch
+      drive_warning1 = "Warning$15$Hardware_Positive_Limit_Switch_Open$$$orange"
+    case Hardware_Negative_Limit_Switch
+      drive_warning1 = "Warning$16$Hardware_Negative_Limit_Switch_is_Open$$$orange"
+    case Hardware_Positive_and_Negative
+      drive_warning1 = "Warning$17$Hardware_Positive_and_Negative_Limit_Switches_are_Open$$$orange"
+    case Software_Positive_Limit_Switch
+      drive_warning1 = "Warning$18$Software_Positive_Limit_Switch_is_Tripped$$$orange"
+    case Software_Negative_Limit_Switch
+      drive_warning1 = "Warning$19$Software_Negative_Limit_Switch_is_Tripped$$$orange"
+    case  Software_Limit_Switches_are
+      drive_warning1 = "Warning$20$Software_Limit_Switches_are_Tripped$$$orange"
+    case HIPERFACE_Encoder_Resolution
+      drive_warning1 = "Warning$21$HIPERFACE_Encoder_Resolution_Mismatch$$$orange"
+    case Tamagawa_Battery_Low_Voltage
+      drive_warning1 = "Warning$22$Tamagawa_Battery_Low_Voltage$$$orange"
+    case EnDat_Encoder_Resolution 
+      drive_warning1 ="Warning$24$EnDat_Encoder_Resolution_Mismatch$$$orange"
+    case PFB_Backup_No_Read
+      drive_warning1 = "Warning$25$PFB_Backup_No_Read$$$orange"
+    case Offset_and_or_Gain
+      drive_warning1 = "Warning$27$Offset_and_or_Gain_Adjustment_Values_Detected_After_SININIT$$$orange"
+    case Bus_AC_Supply_Line 
+      drive_warning1 = "Warning$32$Bus_AC_Supply_Line_Disconnected$$$orange"
+  end select 
+  
+  for i=1 to length
+    
+    if mid$(bin_num,i,1) = "1" then 
+    
+    warn = length - i 
+    select case warn 
+    
+      case STO_Warning 
+        Drive_warning2 = "Warninng$1$STO_Warning$$$orange"
+      case Drive_Foldback_Warning  
+        Drive_warning2 = "Warning$2$Drive_Foldback_Warning$$$orange"
+      case Motor_Foldback_Warning
+        Drive_warning2 = "warning$3$Motor_Foldback_Warning$$$orange"
+      case Under_Voltage
+        Drive_warning2 = "Warning$4$Under_Voltage$$$orange"
+      case Power_Stage_Over_Temperature
+        drive_warning2 = "Warning$5$Power_Stage_Over_Temperature$$$orange"
+      case Motor_Over_Temperature
+        drive_warning2 = "Warning$6$Motor_Over_Temperature$$$orange"
+      case Control_Board_Over_Temperature
+        drive_warning2 ="Warning$9$Control_Board_Over_Temperature$$$orange"
+      case Phase_Find_Required
+        drive_warning2 = "Warning$10$Phase_Find_Required$$$orange"
+      case PLL_No_Synchronized
+        drive_warning2 = "Warning$11$PLL_No_Synchronized$$$orange"
+      case Hardware_Positive_Limit_Switch
+        drive_warning2 = "Warning$15$Hardware_Positive_Limit_Switch_Open$$$orange"
+      case Hardware_Negative_Limit_Switch
+        drive_warning2 = "Warning$16$Hardware_Negative_Limit_Switch_is_Open$$$orange"
+      case Hardware_Positive_and_Negative
+        drive_warning2 = "Warning$17$Hardware_Positive_and_Negative_Limit_Switches_are_Open$$$orange"
+      case Software_Positive_Limit_Switch
+        drive_warning2 = "Warning$18$Software_Positive_Limit_Switch_is_Tripped$$$orange"
+      case Software_Negative_Limit_Switch
+        drive_warning2 = "Warning$19$Software_Negative_Limit_Switch_is_Tripped$$$orange"
+      case  Software_Limit_Switches_are
+        drive_warning2 = "Warning$20$Software_Limit_Switches_are_Tripped$$$orange"
+      case HIPERFACE_Encoder_Resolution
+        drive_warning2= "Warning$21$HIPERFACE_Encoder_Resolution_Mismatch$$$orange"
+      case Tamagawa_Battery_Low_Voltage
+        drive_warning2 = "Warning$22$Tamagawa_Battery_Low_Voltage$$$orange"
+      case EnDat_Encoder_Resolution 
+        drive_warning2 ="Warning$24$EnDat_Encoder_Resolution_Mismatch$$$orange"
+      case PFB_Backup_No_Read
+        drive_warning2 = "Warning$25$PFB_Backup_No_Read$$$orange"
+      case Offset_and_or_Gain
+        drive_warning2 = "Warning$27$Offset_and_or_Gain_Adjustment_Values_Detected_After_SININIT$$$orange"
+      case Bus_AC_Supply_Line 
+        drive_warning2 = "Warning$32$Bus_AC_Supply_Line_Disconnected$$$orange"
+      case 0 
+        num_of_warnings = "No Warning$$$$$black" 
+    end select  
+    end if   
+  next i
+  
+  num_of_warnings = drive_warning1 + chr$(13) + chr$(10) + drive_warning2
+  
+end function
+  
+  
+  
+'****************************************************************************
+' Function Name: cdhd_fw_download
+' Description: Download f/w file device with FOE
+' Author: Rasty Slutsker
+' Input Parameters: Slave address
+' Output Parameters: File name
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub cdhd_fw_download(byval slave_address as long, byval file_name as string)
+dim fd as long=1
+dim stt as long=0
+dim cnt as long=0
+dim scnt as long=0
+dim ret as long
+'search free file descriptor
+while isopen(fd)
+  fd=fd+1
+end while
+open file_name mode="r" as #fd
+close #fd
+call ec_stopmaster
+sleep 500
+' try 3 times
+for cnt = 1 to 10
+  scnt= EC_ETHERCAT_INIT
+  if scnt >=  slave_address then ' do we have enough slaves?
+    sleep 500
+    ret= EC_SLAVE_SET_state(slave_address,EC_STATE_BOOT)
+    sleep 500
+    stt= EC_SLAVE_GET_state(slave_address)
+    if scnt >=  slave_address AND stt = EC_STATE_BOOT AND 0 = ret then
+      goto x1
+    end if
+  end if
+next
+x1:
+sleep 500
+if scnt < slave_address or EC_STATE_BOOT <> stt then
+  print "cdhd_fw_download: number of devices ";cnt;"state of device #";slave_address;" is ";stt
+  throw EC_incorrect_state
+end if  
+  call ec_foe_write(slave_address,file_name)
+' drive will reboot  
+  call ec_stopmaster
+' wait till drive is rebooting
+  sleep 6
+' re-enumarate  
+  fd= EC_ETHERCAT_INIT
+end sub
+
+'****************************************************************************
+' Function Name: cdhd_max_speed
+' Description: Returns the maximum speed of the motor in rps. 
+' Author: Yonathan Klein
+' Input Parameters: Slave address
+' Return Value: Maximum speed from the drive
+'**************************************************************
+public function cdhd_max_speed(byval slave_address as long, byval ax_type as long) as long
+
+	dim bit_value_of_speed as long
+	dim resolution_of_drive as long
+	dim pitch_of_drive as long
+	
+	resolution_of_drive = (EC_SDO_READ(slave_address ,0x6092,1)/EC_SDO_READ(slave_address ,0x6092,2))*(EC_SDO_READ(slave_address ,0x6091,1)/EC_SDO_READ(slave_address ,0x6091,2))
+	pitch_of_drive = ec_sdo_read(slave_address, 0x207d,0)
+
+	if ax_type = 2 then
+		cdhd_max_speed = (ec_sdo_read(slave_address ,0x6080,0)/(resolution_of_drive/pitch_of_drive))
+	else 
+		cdhd_max_speed = (ec_sdo_read(slave_address ,0x6080,0)/resolution_of_drive)	
+	end if
+end function
+
+
+'****************************************************************************
+' Function Name: cdhd_max_acc
+' Description: Returns the maximum acceleration of the motor in rps.
+' Author: Yonathan Klein
+' Input Parameters: Slave address
+' Return Value: Maximum acceleration from the drive
+'****************************************************************************
+public function cdhd_max_acc(byval slave_address as long, byval ax_type as long ) as long
+
+	dim cdhd_max_acc_in  as long
+	dim resolution_of_drive as long
+	dim pitch_of_drive as long
+	
+	resolution_of_drive = (EC_SDO_READ(slave_address ,0x6092,1)/EC_SDO_READ(slave_address ,0x6092,2))*(EC_SDO_READ(slave_address ,0x6091,1)/EC_SDO_READ(slave_address ,0x6091,2))
+	pitch_of_drive = ec_sdo_read(slave_address, 0x207d,0)
+	
+	if ax_type = 2 then
+		cdhd_max_acc_in = (ec_sdo_read(slave_address ,0x60C5,0)/(resolution_of_drive/pitch_of_drive))
+	else 
+		cdhd_max_acc_in = (ec_sdo_read(slave_address ,0x60C5,0)/resolution_of_drive)	
+	end if
+	
+	if cdhd_max_acc_in <0 then
+		cdhd_max_acc = (cdhd_max_acc_in * (-1))
+	else 
+		cdhd_max_acc = cdhd_max_acc_in
+	end if
+end function

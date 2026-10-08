@@ -1,0 +1,171 @@
+'------------------------------------------------------------------------------
+' File:        oled.prg
+' Purpose:     Manipulation of IEI DRPC OLED display and keypad
+' Version:     1.00
+' Author:      <MyFullName>
+' Description:
+' History:     YYYY-MM-DD  <MyShortCut>  V1.00
+'              Created
+'------------------------------------------------------------------------------
+
+' module global "constants"
+
+'------------------------------------------------------------------------------
+' Function name: 
+' input parameters
+' bank: starts from 0
+' page: starts from 0 
+' return value:
+' 0 - ok
+' <>0 - error
+' Note: bank/page 0,0 contain boot up image displayed on OLED
+'------------------------------------------------------------------------------
+dim shared handle as long = 253
+dim shared port as string = "com5"
+sub openport
+    dim str1 as string
+    if NOT isopen(handle) then
+      Open port BaudRate=1200 Parity=0 DataBits=8 StopBit=1 As #handle 
+'   open "COM.REC" Mode="w" as #handle
+      str1=input$(loc(handle),#handle) ' flush port
+    end if  
+
+end sub
+'------------------------------------------------------------------------------
+' Function name: closeport
+' input parameters
+' output parameters
+' return value:
+'------------------------------------------------------------------------------
+sub closeport
+  try 
+    close #handle
+  catch else 
+    
+  end try  
+end sub
+'------------------------------------------------------------------------------
+' Function name: erasepage
+' Description: erase flash page in OLED display
+' input parameters
+' bank: starts from 0
+' page: starts from 0 
+' return value:
+' 0 - ok
+' <>0 - error
+' Note: bank/page 0,0 contain boot up image displayed on OLED
+'------------------------------------------------------------------------------
+public function erasepage(byval bank as long, byval page as long) as long
+dim tout as long
+call openport
+
+print #handle,chr$(8);chr$(bank);chr$(page);
+tout = sys.clock + 12000
+do
+  sleep 50
+loop while sys.clock < tout  AND loc(handle) = 0
+if "^" = input$(loc(handle),#handle) then ' flush port
+  print "Erase complete"
+  erasepage = 0
+else
+  print "Erase fail"
+  erasepage = -1
+end if  
+call closeport
+end function
+'------------------------------------------------------------------------------
+' Function name: displaypage
+' Description: show contents of bank/page on the OLED screeen 
+' input parameters
+' bank: starts from 0
+' page: starts from 0 
+' return value:
+' Note: bank/page 0,0 contain boot up image displayed on OLED
+'------------------------------------------------------------------------------
+public sub displaypage(byval bank as long, byval page as long)
+dim tout as long
+call openport
+print #handle,chr$(6);chr$(bank);chr$(page);
+tout = sys.clock + 120
+do
+  sleep 50
+loop while sys.clock < tout  AND loc(handle) = 0
+call closeport
+end sub
+'------------------------------------------------------------------------------
+' Function name: writeicon
+' Description: write bootup image file to bank 0 page 0 of OLED
+' size of image shall be 128x64 or 1024 bytes exactly!
+' input parameters: file name
+' return value:
+' Note: bank/page 0,0 contain boot up image displayed on OLED
+' file is generated from BMP 128x64 1 bit depth using LCDAssistent  http://en.radzio.dxp.pl/bitmap_converter/ 
+'------------------------------------------------------------------------------
+public sub writeicon(byval fname as string)
+dim ret as long
+dim fd as long = 254
+dim str1 as string
+dim str2 as string
+dim tout as long
+ret = erasepage(0,0)
+open fname Mode="r" as #fd
+str1=input$(loc(fd),#fd)
+str2 = right$(str1,1024)
+ret = size(str2)
+if ret = 1024 then
+    call openport
+    print #handle,chr$(5);chr$(0);chr$(0);str2;
+    tout = sys.clock + 12000
+    do
+      sleep 50
+    loop while sys.clock < tout  AND loc(handle) = 0
+    if "^" = input$(loc(handle),#handle) then ' flush port
+      print "Image uploaded"
+    else
+      print "Image upload fail"
+    end if 
+else
+    print "File must be 1024!!"
+end if
+    
+call closeport
+print "Written ";len(str2);" bytes"
+call displaypage(0,0)
+close #fd
+end sub 
+'------------------------------------------------------------------------------
+' Function name: clrscr
+' Description: clear screen
+' input parameters
+' return value:
+'------------------------------------------------------------------------------
+public sub clrscr 
+dim tout as long
+call openport
+print #handle,chr$(0xfc);
+tout = sys.clock + 120
+while sys.clock < tout  AND loc(handle) = 0
+sleep 1
+end while
+call closeport
+end sub
+'------------------------------------------------------------------------------
+' Function name: printtext
+' Description: Send ASCII text to OLED
+' input parameters
+' row: 0..7
+' col: 0..20
+' text ascii text
+'(0,0) is upper left corner
+' return value:
+'------------------------------------------------------------------------------
+public sub printtext(byval row as long, byval col as long,byval text as string)
+dim tout as long
+call openport
+print #handle,chr$(0x4);chr$(row);chr$(col);chr$(size(text));text;
+tout = sys.clock + 120
+while sys.clock < tout  AND loc(handle) = 0
+sleep 1
+end while
+call closeport
+end sub

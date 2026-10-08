@@ -1,0 +1,187 @@
+'------------------------------------------------------------------------------
+' File:        <MyLib>.lib
+' Purpose:     Just an example of a module header
+' Version:     1.00
+' Author:      <MyFullName>
+' Description:
+' History:     YYYY-MM-DD  <MyShortCut>  V1.00
+'              Created
+'------------------------------------------------------------------------------
+
+' module global "constants"
+
+
+' module global variables
+common shared Txd[11] as long
+common shared Rxd[14] as long
+common shared LED_H as long = 0
+'bit 0   LED1  Y Lock
+'bit 1   LED2  Z Lock
+'bit 2   LED3  Y Up
+'bit 3   LED4  F1
+'bit 4   LED5  F2
+'bit 5   LED6  F3
+'bit 6   LED7  Y Down
+'bit 7   LED8  MANUAL
+common shared LED_L as long = 0
+'bit 0   LED1  低速
+'bit 1   LED2  中速
+'bit 2   LED3  高速
+'bit 3   LED4  Z Down
+'bit 4   LED5  Z UP
+'bit 5   LED6  X Left
+'bit 6   LED7  X Right
+'bit 7   LED8  X Lock
+
+'--------------- LED_H Falgs ------------------------------
+common shared Key_H_Buf as long
+common shared LED_H_TEMP[8] as long
+common shared Led_H_Status[8] as long
+common shared newKey_H_Staus[8] as long
+common shared oldKey_H_Staus[8] as long
+common shared Key_H_Status[8] as string
+common shared Bin_H_Count as long
+common shared Bin_H_Temp as string
+'--------------- LED_L Falgs ------------------------------
+common shared Key_L_Buf as long
+common shared LED_L_TEMP[8] as long
+common shared Led_L_Status[8] as long
+common shared newKey_L_Staus[8] as long
+common shared oldKey_L_Staus[8] as long
+common shared Key_L_Status[8] as string
+common shared Bin_L_Count as long
+common shared Bin_L_Temp as string
+
+common shared CheckSum_D as long
+common shared SDummy as string
+
+
+common shared XPos as long
+common shared YPos as long
+common shared ZPos as long
+common shared Enc as long
+
+common shared JogVelSetFactor as double
+common shared XJogFactor as double
+common shared YJogFactor as double
+common shared ZJogFactor as double
+
+common shared JogVelSet as double   'jog velocity set
+
+common shared sDigtTube[5] as string
+common shared lDigtTube[5] as long
+common shared DigtTubeDisplay[5] as long
+common shared DigtTubeDisplayPre[5] as long
+common shared dgxyzvel as double=0.000
+common shared sgxyzvel as string
+common shared length as long  
+common shared lengthPre as long
+common shared pointpos as long
+
+
+' <MyLib>.lib
+
+public function sendCheckSum as long
+  dim index as long
+'    Txd[1] = 255
+'    Txd[2] = 01
+'    Txd[3] = 08
+'    Txd[4] = 00
+'    Txd[5] = 08
+'    Txd[6] = 00
+'    Txd[7] = 08
+'    Txd[8] = 00
+'    Txd[9] = 00
+'    Txd[10]= 02
+'    Txd[11]= 01
+'    Txd[12]= 153
+'    Txd[13]= 61
+'    Txd[14]= 165
+    CheckSum_D=0
+    for index=2 to 9
+      checksum_D =checksum_D+Txd[index]  
+    next index 
+    
+    SDummy=Hex$(CheckSum_D)
+    SDummy=RIGHT$(SDummy,2)
+    SDummy="0x"+SDummy
+    sendCheckSum = VAL(SDummy)    
+end function
+
+
+public sub DigtTubeDisplayVel
+
+  dim i as long
+'  'Display real time velocity
+'  dgxyzvel=Sqrt(X.VFb^2+Y.VFb^2+Z.VFb^2)    
+'  sgxyzvel=LEFT$(STR$(dgxyzvel),5)
+'  if dgxyzvel=0 then
+'    sgxyzvel="0.000"
+'  end if  
+'  pointpos=INSTR(sgxyzvel, ".")
+'  length=LEN(sgxyzvel)
+'  sgxyzvel=LEFT$(STR$(dgxyzvel),5)
+  
+  'Display setting velocity
+  dgxyzvel=JOG_SPEED_ACTUAL*JOG_SPEED_FACTOR
+  sgxyzvel=STR$(dgxyzvel)
+  pointpos=INSTR(sgxyzvel, ".")
+  lengthPre=LEN(sgxyzvel)
+  if lengthPre <5 and (Not pointpos) then
+    sgxyzvel=sgxyzvel+"."
+    for i=lengthPre+1 to 5
+    sgxyzvel=sgxyzvel+"0"
+    next i
+  end if
+  
+  sgxyzvel=LEFT$(sgxyzvel,5)
+  length=LEN(sgxyzvel)
+  pointpos=INSTR(sgxyzvel, ".")
+  try
+    for i=1 to 5
+      sDigtTube[i]=LEFT$(sgxyzvel,1)
+      lDigtTube[i]=VAL(sDigtTube[i])
+      sgxyzvel=RIGHT$(sgxyzvel,length-i)
+    next i
+    
+    for i=1 to 5
+        SELECT CASE LDigtTube[i]
+        
+          CASE 0
+            DigtTubeDisplayPre[i]=0x3F
+          CASE 1
+            DigtTubeDisplayPre[i]=0x06
+          CASE 2
+            DigtTubeDisplayPre[i]=0x5B
+          CASE 3
+            DigtTubeDisplayPre[i]=0x4F
+          CASE 4
+            DigtTubeDisplayPre[i]=0x66
+          CASE 5
+            DigtTubeDisplayPre[i]=0x6D
+          CASE 6
+            DigtTubeDisplayPre[i]=0x7D
+          CASE 7
+            DigtTubeDisplayPre[i]=0x07
+          CASE 8
+            DigtTubeDisplayPre[i]=0x7F
+          CASE 9
+            DigtTubeDisplayPre[i]=0x6F
+          CASE ELSE
+            DigtTubeDisplayPre[i]=0x80
+        END SELECT 
+    next i
+    
+         DigtTubeDisplayPre[pointpos-1]= DigtTubeDisplayPre[pointpos-1]+ 0x80
+         
+     for i=1 to pointpos-1 
+         DigtTubeDisplay[i]=DigtTubeDisplayPre[i]
+     next i    
+     
+     for i=pointpos to 4
+         DigtTubeDisplay[i]=DigtTubeDisplayPre[i+1]
+     next i
+  catch 8006
+'     print "Index underflow in serial.lib"
+  end try
+end sub

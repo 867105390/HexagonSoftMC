@@ -1,0 +1,341 @@
+'*****************************  softMC Motion Configurator Library  ****************************
+'
+' File:		MC_CONF.LIB
+' Purpose:	This library holds the interface used by the Motion Configurator to gather
+'			the required information about softMC and the physical topology
+' Version:  1.0.0.0
+' Author:  Nir Geller
+'
+' History:  16.8.2015  V1.0.0.0 - Created
+'
+' ********************************************************************************
+
+
+import_c EC_GET_SLAVES_INFO([*] as long) as long
+import_c EC_NRSLAVES() as long
+
+dim shared LIB_VERSION as const string = "1.0.0.0"
+
+
+'****************************************************************************
+' Function Name: MC_CONF_Lib_Version
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: MC_CONF Library Version
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function MC_CONF_Lib_Version as string
+
+	MC_CONF_Lib_Version = "MC_CONF.LIB Version: " + LIB_VERSION
+
+end function
+
+
+
+
+'****************************************************************************
+' Function Name: Get_Max_Num_Of_Axes
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: The maximum number of axes softMC allows
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function Get_Max_Num_Of_Axes as long
+
+	dim sys_info_str as string
+	dim temp_num_str as string
+	dim i as long
+
+	sys_info_str = vesexecute("?sys.information")
+	i = instr(sys_info_str, "Maximum number of axes")
+
+	while ASC(sys_info_str, i) > 57 or ASC(sys_info_str, i) < 48
+		i = i + 1
+	end while
+
+	if ASC(sys_info_str, i + 1) <> 13 then
+		temp_num_str = MID$(sys_info_str, i, 2)
+	else
+		temp_num_str = MID$(sys_info_str, i, 1)
+	end if
+
+	Get_Max_Num_Of_Axes = VAL(temp_num_str)
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: Get_Ecat_Slaves_Info
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: A string occupied with EtherCAT slaves data
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public Function Get_Ecat_Slaves_Info as string
+
+	dim slaves_str as string
+	dim data[384] as long  '  size is maximum number of slaves * 6 fields in EC_SLAVE_INFO structure
+	dim retVal as long = 0	
+	dim slave_pos as long = 0
+	dim i as long = 1
+
+	retVal = EC_GET_SLAVES_INFO(data)
+	if retVal <> 0 then
+		Get_Ecat_Slaves_Info = "ERROR: " + STR$(retVal)
+		goto Get_Ecat_Slaves_DONE
+	end if
+
+	slaves_str = ""
+	for slave_pos = 1 to EC_NRSLAVES()
+
+		slaves_str = slaves_str + STR$(data[i + 1]) + ":"
+		slaves_str = slaves_str + STR$(data[i + 2]) + ":"
+		slaves_str = slaves_str + STR$(data[i + 3]) + ";"
+		i = i + 6
+
+	next
+
+	Get_Ecat_Slaves_Info = slaves_str
+
+Get_Ecat_Slaves_DONE:
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: Monitor_Config_Task
+' Description:
+' Called From: softMC Configurator
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: In case of success return the string "Done"
+'				In case of failure returns error string
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public Function Monitor_Config_Task as string
+
+	dim retStr as string
+
+	retStr = VesExecute("?CONFIG_PRG_SUCCESS")
+
+	if INSTR(retStr, "D:1") = 0 then
+		Monitor_Config_Task = "reset all rejected. Check other connections to MC or errors in CONFIG.PRG"
+	else
+		Monitor_Config_Task = "Done"
+	end if
+
+end function
+
+
+'****************************************************************************
+' Function Name: Kill_Unload_Disable
+' Description: this sub asks to kill and unload all tasks, then disable all the drives
+' Called From: softMC Configurator
+' Author: Eran Korkidi
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public Sub Kill_Unload_Disable
+
+	dim sTaskList			as string
+	dim sTaskNameEq			as string = "TaskName="
+	dim sDotPrg				as string = ".PRG"
+	dim sState				as string = "State"
+	dim lTaskNameEqPosition	as long
+	dim lDotPrgPosition		as long
+	dim lTaskNameEqLenght	as long
+	dim lDotPrgLenght		as long
+	dim lFileNameSize		as long
+	dim lStatePosition		as long
+	dim lTaskListLenght		as long
+	dim sTaskName 			as string
+
+	lTaskNameEqLenght	= Len(sTaskNameEq)
+	lDotPrgLenght 		= Len(sDotPrg)
+	sTaskList = VesExecute("?tasklist")
+	do
+		lTaskNameEqPosition = Instr(sTaskList, sTaskNameEq)
+		lDotPrgPosition		= Instr(sTaskList, sDotPrg)
+		if	lDotPrgPosition	then
+			lFileNameSize = (lDotPrgPosition + lDotPrgLenght) - (lTaskNameEqPosition + lTaskNameEqLenght)
+			sTaskName = Mid$(sTaskList,lTaskNameEqPosition + lTaskNameEqLenght ,lFileNameSize)
+
+			call	subKillUnlaodTask(sTaskName)
+			sTaskList = VesExecute("?tasklist")
+
+		end	if
+		sleep 10
+	Loop	while	lTaskNameEqPosition
+
+	sTaskList = VesExecute("sys.en = 0")
+	sTaskList = VesExecute("sys.en = 1")
+
+end sub
+
+'	this sub kills and unloads the input task
+sub subKillUnlaodTask(byval sTaskName as string)
+	dim	sTaskState as string
+	dim	ldummy as long
+	try
+		ktas$ sTaskName
+		unload$ sTaskName
+		Print "Killing & Unloading task: " sTaskName
+	catch	else
+	end try
+end sub
+
+
+
+'****************************************************************************
+' Function Name: Start_Setup_Task
+' Description:
+' Called From: softMC Configurator
+' Author: Nir Geller
+' Input Parameters: String with task name WITHOUT THE EXTENSION .PRG
+' Output Parameters: None
+' Return Value: A string occupied with success (Done) or error indication
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public Function Start_Setup_Task(byval task_to_start as string) as string
+
+	dim retStr as string
+
+	retStr = VesExecute("Load " + task_to_start + ".PRG")
+	if INSTR(retStr, "E:Error") <> 0  then
+
+		Start_Setup_Task = retStr
+		goto START_SETUP_TASK_DONE
+
+	end if
+
+	retStr = VesExecute("Stas " + task_to_start + ".PRG")
+	if INSTR(retStr, "E:Error") <> 0  then
+
+		Start_Setup_Task = retStr
+		goto START_SETUP_TASK_DONE
+
+	else
+
+		Start_Setup_Task = "Done"
+
+	end if
+
+START_SETUP_TASK_DONE:
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: Monitor_Setup_Task
+' Description:
+' Called From: softMC Configurator
+' Author: Nir Geller
+' Input Parameters: String with task name WITHOUT THE EXTENSION .PRG
+' Output Parameters: None
+' Return Value: A string occupied with success (D:10), running (D:1) or error indication
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public Function Monitor_Setup_Task(byval task_to_monitor as string) as string
+
+	dim retStr as string
+	dim tempStr as string
+	dim i as long
+
+	retStr = VesExecute("?" + task_to_monitor + ".PRG.STATE")
+
+	' In case of an error, for example, task queried not found, the return string will look like this:
+	' E:Error:  8008, "Task not found.", Task: ,tVirtualInp, Line: 1, Module: Interpreter
+	if INSTR(retStr, "Error:") <> 0  then
+
+		Monitor_Setup_Task = retStr
+		goto MONITOR_SETUP_TASK_DONE
+
+	end if
+
+	' Task is finished/killed, the return string is "Done"
+	if INSTR(retStr, "D:10") <> 0  then
+
+		Monitor_Setup_Task = "Done"
+		goto MONITOR_SETUP_TASK_DONE
+
+	end if
+
+	' Task is running, the return string is "Running"
+	if INSTR(retStr, "D:1") <> 0  then
+
+		Monitor_Setup_Task = "Running"
+		goto MONITOR_SETUP_TASK_DONE
+
+	end if
+
+
+	' Task stopped due to runtime error. This is what we've been waiting for.
+	' The return string will look like:
+	' Error Code = 1341,Error String:  8001, "Division by zero.", Task: ,tVirtualInp, Line: 1, Module: Interpreter
+	if INSTR(retStr, "D:4") <> 0  then
+
+		tempStr = "Error Code = "
+		retStr = VesExecute("?"+task_to_monitor + "_PRG_error_code")
+		i = 2
+		while ASC(retStr, i) <> 13
+			i = i + 1
+		end while
+		tempStr = tempStr + MID$(retStr, 3, i - 2)
+		tempStr = tempStr + ",Error String: "
+
+		retStr = VesExecute("?"+task_to_monitor + "_PRG_error_str")
+
+		if 11 < LEN(retStr) then
+
+			i = 11
+			while ASC(retStr, i) <> 13
+				i = i + 1
+			end while
+			tempStr = tempStr + MID$(retStr, 12, i - 11)
+
+			Monitor_Setup_Task = tempStr
+
+		end if
+
+	end if
+
+	' Task is in an invalid state, like "paused", "ready", etc...
+	' The return string is "Invalid"
+	if Monitor_Setup_Task = "" then
+		Monitor_Setup_Task = "Invalid"
+	end if
+
+MONITOR_SETUP_TASK_DONE:
+
+end function
+
+

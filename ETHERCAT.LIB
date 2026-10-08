@@ -1,0 +1,5140 @@
+'******************************  EtherCAT Library  ******************************
+'
+' File:    ETHERCAT.LIB
+' Purpose:  This library serves as mid-layer between MC_Basic and C implementation
+' Version:  1.0.0.9
+' Author:  Nir Geller
+'
+' *****************************  NO PDO FILTERING  ******************************
+'
+' *******************************  SLAVE ADDRESS STARTS AT 1 INSTEAD OF ZERO  *******************************
+'
+' History:  16.11.2014  V1.0.0.1 - Changing API of EC_USE_SLAVE: Added a new argument
+'      to the function 'dc_sync': In order to prevent the master from trying to
+'      synchronize clocks of slaves that do not support DC - set dc_sync to FALSE
+'
+'      15.12.2014  V1.0.0.2 - Adapted to comply with new IOs handling in MC version 0.4.13.2rc1-C2
+'
+'      28.12.2014  V1.0.0.3 - EC_STARTMASTER waits for hpet calibration. Code is removed from ETHERCAT.LIB
+'
+'      5.1.2015  V1.0.0.4 - Creation of PDO mapping and bus cycle time setting is moved from EC_SETUP.PRG into the context of EC_STARTMASTER
+'
+'      26.4.2015  V1.0.0.5 - If EC_STARTMASTER throws a PLL error, EC_SETUP.PRG is restarted up to 5 times retrying to finish successfully
+'                   CHECK_TOPOLOGY throws an informative exception
+'                   At end of EC_STARTMASTER - added check over drives ECAT mode and minimum required PDOs
+'
+'      12.7.2015  V1.0.0.6 - Added the public subroutine EC_SDO_WRITE_STRING
+'
+'      3.11.2015   V1.0.0.7 - Update error numbers according to change in the firmware (ethercat/ec_errors.h)
+'
+'      23.11.2015  V1.0.0.8 - In EC_SET_BUS_CYCLETIME add sanity check on input and throw in case of error
+'
+'      1.12.2015  V1.0.0.9 - Expanded EC_VALIDATE_MINIMUM_PDOS to match minimum PDO mapping with opmode that is set by 
+'                  Configurator generated EC_SETUP.PRG in the field et_opmode
+'
+'      28.1.2016  V1.0.0.10 - Add constant for BUS identification: CAN and EtherCAT
+'
+'      16.6.2016  V1.0.0.11 - EC_SLAVE_HOME_DS402 is carried out via PDO instead of SDO
+'
+' ***********************************************************************************************************
+
+dim shared LIB_VERSION as const string = "1.0.0.11"
+
+' ---------------- Constant values --------------
+
+common shared DS402 as const long = 402
+common shared ECAT_MOTIONSLAVE as const long = 0x119
+common shared ECAT_IOSLAVE as const long = 0x117
+common shared ECAT_BUSID as  const long = 0
+common shared CAN_BUSID as const long = 1
+
+
+'**********************    EC Generic Drive    **************************
+common shared GENERIC_DS402_DRIVE_VENDOR as const long = 0xAAAA
+common shared GENERIC_DS402_DRIVE_PRODUCT_ID as const long = 0xAAAA
+
+
+common shared EC_IO_DOMAIN as const long = 1
+common shared EC_MOTION_DOMAIN as const long = 0
+
+common shared EC_MAX_PDO_TYPES    as const long = 64
+common shared EC_MAX_SLAVES       as const long = 64
+common shared EC_MAX_PDO_ENTRIES  as const long = 400
+common shared EC_SDO_RETRIES  as const long = 0
+
+' The following list must match with the same list that appears in ethercat/mc_ethercat.h, lines 198-208
+common shared EC_PDO_PFB      as const long = 1
+common shared EC_PDO_PCMD     as const long = 2
+common shared EC_PDO_STATUS   as const long = 3
+common shared EC_PDO_CTRL     as const long = 4
+common shared EC_PDO_VCMD     as const long = 5
+common shared EC_PDO_PEXT     as const long = 6
+common shared EC_PDO_TRQFBK   as const long = 7
+common shared EC_PDO_TRQCMD   as const long = 8
+common shared EC_PDO_TRQDMND  as const long = 9
+common shared EC_PDO_TRQADDCMD  as const long = 10
+common shared EC_PDO_VADDCMD as const long = 11
+common shared EC_PDO_DIN 	 as const long = 12
+
+common shared EC_PCMD_INDEX_607Ah as const long = 0x607a
+common shared EC_PCMD_SUBINDEX_00h as const long = 0x00
+
+common shared EC_PFB_INDEX_6064h as const long = 0x6064
+common shared EC_PFB_SUBINDEX_00h as const long = 0x00
+
+common shared EC_CTRL_INDEX_6040h as const long = 0x6040
+common shared EC_CTRL_SUBINDEX_00h as const long = 0x00
+
+common shared EC_STATUS_INDEX_6041h  as const long = 0x6041
+common shared EC_STATUS_SUBINDEX_00h  as const long = 0x00
+
+common shared EC_VCMD_INDEX_6081h  as const long = 0x6081
+common shared EC_VCMD_SUBINDEX_00h  as const long = 0x00
+
+common shared EC_PEXT_INDEX_20B6h  as const long = 0x20B6
+common shared EC_PEXT_SUBINDEX_00h  as const long = 0x00
+
+common shared EC_TRQFBK_INDEX_6078h  as const long = 0x6078
+common shared EC_TRQFBK_SUBINDEX_00h  as const long = 0x00
+
+common shared EC_TRQCMD_INDEX_6071h  as const long = 0x6071
+common shared EC_TRQCMD_SUBINDEX_00h  as const long = 0x00
+
+common shared EC_TRQDMND_INDEX_6074h  as const long = 0x6074
+common shared EC_TRQDMND_SUBINDEX_00h  as const long = 0x00
+
+common shared DIGITAL_INPUTS_INDEX_0X60FD as const long = 0x60FD
+common shared DIGITAL_INPUTS_SUBINDEX_0X0 as const long = 0x0
+
+common shared DIGITAL_OUTPUTS_INDEX_0X60FE as const long = 0x60FE
+common shared DIGITAL_OUTPUTS_SUBINDEX_0X1 as const long = 0x1
+common shared OUTPUTS_MASK_SUBINDEX_0X2 as const long = 0x2
+
+' PDO Remapping Objects
+common shared EC_SYNC_MANAGER_1C10 as const long = 0x1C10
+common shared EC_SYNC_MANAGER_1C11 as const long = 0x1C11
+common shared EC_SYNC_MANAGER_1C12 as const long = 0x1C12
+common shared EC_SYNC_MANAGER_1C13 as const long = 0x1C13
+
+common shared EC_RxPDO_1600 as const long = 0x1600
+common shared EC_RxPDO_1601 as const long = 0x1601
+common shared EC_RxPDO_1602 as const long = 0x1602
+common shared EC_RxPDO_1603 as const long = 0x1603
+
+common shared EC_TxPDO_1A00 as const long = 0x1A00
+common shared EC_TxPDO_1A01 as const long = 0x1A01
+common shared EC_TxPDO_1A02 as const long = 0x1A02
+common shared EC_TxPDO_1A03 as const long = 0x1A03
+
+common shared EC_TRQADDCMD_INDEX_60B2h  as const long = 0x60B2
+common shared EC_TRQADDCMD_SUBINDEX_00h  as const long = 0x00
+
+common shared EC_VADDCMD_INDEX_60B1h  as const long = 0x60B1
+common shared EC_VADDCMD_SUBINDEX_00h  as const long = 0x00
+
+'*******************************************************************
+common shared EC_STATE_INIT     as const long = 0x01
+common shared EC_STATE_PREOP    as const long = 0x02
+common shared EC_STATE_BOOT     as const long = 0x03
+common shared EC_STATE_SAFEOP   as const long = 0x04
+common shared EC_STATE_OP       as const long = 0x08
+common shared EC_STATE_INVALID  as const long = 0x00
+
+
+common shared POS_ENCODE_RES_INDEX_0x608F as long = 0x608f
+
+common shared POS_SHAFT_RES_0x6092 as long = 0x6092
+
+common shared POS_ENCODE_RES_SUBINDEX_0x1 as long = 0x1
+common shared POS_SHAFT_RES_SUBINDEX_0x1 as long = 0x1
+common shared POS_SHAFT_RES_SUBINDEX_0x2 as long = 0x2
+
+' ethercat diagnostic registers
+dim shared PORT0_IFC as long  = 0x300 'invalid frame counter
+dim shared PORT0_PHC as long  = 0x301 'Physical error counter
+
+dim shared PORT1_IFC as long  = 0x302 'invalid frame counter
+dim shared PORT1_PHC as long  = 0x303 'Physical error counter
+
+dim shared PORT2_IFC as long  = 0x304 'invalid frame counter
+dim shared PORT2_PHC as long  = 0x305 'Physical error counter
+
+dim shared PORT3_IFC as long  = 0x306 'invalid frame counter
+dim shared PORT3_PHC as long  = 0x307 'Physical error counter
+
+
+'optional part
+
+dim shared PORT0_PEC as long  = 0x308 'previous Error counter
+dim shared PORT1_PEC as long  = 0x309 'previous Error counter
+dim shared PORT2_PEC as long  = 0x30a 'previous Error counter
+dim shared PORT3_PEC as long  = 0x30b 'previous Error counter
+
+dim shared SLAVE_MAL as long  = 0x30c 'Malformat error counter
+dim shared SLAVE_LEC as long  = 0x30d 'local Error counter
+
+
+
+dim shared PORT0_LLC as long  = 0x310 ' lost link
+dim shared PORT1_LLC as long  = 0x311 ' lost link
+dim shared PORT2_LLC as long  = 0x312 ' lost link
+dim shared PORT3_LLC as long  = 0x313 ' lost link
+
+'*********************************************************************
+
+
+' Data structures required for EtehrCAT configuration and setup
+
+'PDO Filter - Which PDO belongs to which slave
+type ET_PDO_TYPE
+  et_pdo_subindex as long
+  et_pdo_index as long
+  et_iobit as long  ' First System digital IO bit number to be associated with. Relevant to IO modules, and not motion drives
+  et_io_range as long  '  Range of digital IOs
+  et_inherent_offset as long  '  Inherent offset between beginning of value returned by PDO and the actual IO bits
+  et_io_hw_assistance as long' IO assistance type, unfortunately, due to Vendor-specific implementation must be implemented in C.
+  et_type as long ' For motion drives, motion specific type pdoe, like ctrlword, pfb, etc...
+end type
+
+
+'A struct that describes a slave according to its address (slaveid - 1, 2...)
+'busid - for future use of multiple buses
+'slavetype - a motion drive or an IO module
+
+type ET_SLAVE
+  et_slaveid as long
+  et_busid as long
+  et_slavetype as long
+  et_nr_pdo_entries as long
+  et_opmode as long  '  set with opmode by PDO_Mapping_Device_x. EC_VALIDATE_MINIMUM_PDOS will validate the minimum required PDO according to this variable
+  et_in_use as long  '  Set by EC_USE_SLAVE. Used by EC_ASSIGN_PDOS_AUTO to register in the firmware PDOs only of slaves that are in use.
+end type
+
+
+type PDO_ENTRY
+  pdo_slave as long
+  pdo_index as long
+  pdo_subindex as long
+  pdo_type as long
+  pdo_freq as long
+  pdo_domain as long
+  pdo_dir as long ' Recv or Transmit as configured in drive
+  pdo_iobit as long  '  First system digital IO
+  pdo_io_range as long  '  Range of IOs
+  pdo_io_offset as long  '  Inherent offset between beginning of value returned by PDO and the actual IO bits
+  pdo_io_hwassist as long ' IO assistance type, unfortunately, due to Vendor-specific implementation must be implemented in C.
+end type
+
+
+type EC_SLAVE_INFO
+
+  position as long
+  vendor_id as long
+  product_code as long
+  revision_number as long
+  serial_number as long
+  alias as long
+
+end type
+
+
+'********************************************************************************
+
+' List of C imported functions
+
+import_c EC_ADD_PDO_ENTRY(byval as long, byval as long, byval as long, byval as long) as long
+import_c EC_SET_PDO_TYPE(byval as long, byval as long, byval as long, byval as long) as long
+import_c EC_START_MASTER() as long
+import_c EC_STOP_MASTER() as long
+import_c EC_CREATE_SLAVE(byval as long, byval as long, byval as long, byval as string, byval as long) as long
+import_c SDO_WRITE(byval as long, byval as long, byval as long,byval as long, byval as long) as long
+import_c SDO_READ(byval as long, byval as long, byval as long, as long) as long
+import_c SDO_READ_STRING(byval as long, byval as long, byval as long,  byval as string, as long) as long
+import_c SDO_WRITE_FLOAT(byval as long, byval as long, byval as long, byval as long, byval as double) as long
+import_c SDO_WRITE_STRING(byval as long, byval as long, byval as long, byval as string) as long
+import_c FOE_WRITE(byval as long, byval as string) as long
+import_c SDO_READ_FLOAT(byval as long, byval as long, byval as long, byval as long, as double) as long
+import_c PDO_WRITE(byval as long, byval as long, byval as long, byval as long) as long
+import_c PDO_WRITE_DOUBLE(byval as long, byval as long, byval as long, byval as double) as long
+import_c PDO_WRITE_REAL(byval as long, byval as long, byval as long, byval as double) as long
+import_c PDO_WRITE_LONG_LONG(byval as long, byval as long, byval as long, byval as long, byval as long) as long
+
+import_c PDO_READ(byval as long, byval as long, byval as long, [*] as long) as long
+import_c PDO_READ_DOUBLE(byval as long, byval as long, byval as long, [*] as double) as long
+import_c PDO_READ_REAL(byval as long, byval as long, byval as long, [*] as double) as long
+import_c EC_SET_IO_DATA(byval as long, byval as long, byval as long, byval as long)
+import_c GET_IO_MODULE_IN_OUT(byval as long, byval as long, byval as long) as long
+import_c SET_IO_MODULE_OUTPUT(byval as long, byval as long, byval as long, byval as long) as long
+import_c EC_RESET_SYSTEM_IOS()
+import_c EC_PDO_ENTRIES(byval as long, byval as long, [*] as long) as long
+import_c EC_GET_SLAVES_ID([*] as long) as long
+import_c EC_ALIAS_SLAVE(byval as long, byval as long, byval as long, byval as long) as long
+import_c EC_CHECK_TOPOLOGY(as long) as long
+import_c EC_FIND_PDO(byval as long, byval as long, byval as long) as long
+
+
+import_c EC_INIT(byval as long) as long
+import_c EC_NRSLAVES() as long
+import_c EC_PRINT_SLAVES(byval as  string, byval as long) as long
+import_c PRINT_SLAVE(byval as  string, byval as long, byval as long) as long
+import_c MASTER_OPMODE() as long
+import_c EC_SET_STATE(byval as long, byval as long) as long
+import_c EC_GET_SLAVE_STATE(byval as long) as long
+import_c EC_MASTER_STATUS(byval as string, byval as long) as long
+import_c EC_VERSION(byval as string, byval as long) as long
+import_c EC_CALIB_CMA() as long
+import_c EC_PKTS() as long
+import_c EC_TX_PKTS_DROPPED() as long
+import_c EC_SET_STATIC_DISTANCE(byval as long) as long
+import_c EC_STATIC_DISTANCE() as long
+import_c EC_PKT_TIMEOUTS() as long
+import_c EC_PKT_CORRUPTED() as long
+import_c EC_PKT_UNMATCHED() as long
+import_c EC_RESCAN() as long
+import_c EC_TICKS_UPDATE(byval as long, byval as long) as long
+import_c EC_READ_DC_DRIFT(byval as long) as long
+import_c EC_REG_READ(byval as long, byval as long, byval as long, as long) as long
+import_c EC_REG_WRITE(byval as long, byval as long, byval as long, byval as long) as long
+import_c EC_SET_TX_ERR(byval as long) as long
+'import_c EC_GET_SLAVES_INFO([*] as EC_SLAVE_INFO) as long  '  At the moment it is impossible to pass a pointer to an array of structures from MC-Basic to the firmware
+import_c EC_GET_SLAVES_INFO([*] as long) as long
+import_c EC_GET_PDOS() as String
+import_c IO_LIST(byval as string, byval as long) as long
+import_c EC_SLAVE_SET_NUM_AXES(byval as long, byval as long) as long
+import_c EC_SLAVE_GET_NUM_AXES(byval as long) as long
+import_c SETINPUT(byval  as long , byval  as long , byval  as long ) as long
+import_c ECAT_SET_SLAVES_CALIB_INTERVAL(byval as long)
+import_c ECAT_GET_SLAVES_CALIB_INTERVAL() as long
+import_c EC_SET_OVERLAPPING_PDOS(byval as long, byval as long) as long
+import_c ECAT_SET_SDO_GLOBAL_TIMEOUT(byval as long) as long
+import_c ECAT_SET_SDO_REQUEST_TIMEOUT(byval as long, byval as long) as long
+
+'*********************************************************************
+
+common shared MASTER_INPUT as long = 0 ' PDO Input
+common shared MASTER_OUTPUT as long = 1 ' PDO Output
+common shared ETSLAVES[64] as ET_SLAVE  'EC_MAX_SLAVES = 64
+common shared EC_SLAVES_INFO[64] as EC_SLAVE_INFO  ' Extract slaves info, according to which EC_SETUP will configure each slave
+common shared nr_slaves as long = 0 ' EC_MAX_SLAVES  ' Maximum number of slaves
+common shared MotSlaves as long = 0  ' number of MOTION slaves
+common shared IOSlaves as long = 0  ' number of IO slaves
+common shared pdo_map[64][64] as ET_PDO_TYPE  'EC_MAX_PDO_TYPES = 64
+
+common shared EC_BUSID as long  = 0  ' Field bus id - for future use
+common shared EC_BUS_CYCLETIME as long  = 4000    '  Set to 4000. For a cycle time of 500 us, add to FWCONFIG: hpetfreq = 2000
+common shared EC_ADDRESS_BY_ALIAS as long = 0
+' The flag EC_ADDRESS_BY_ALIAS is set and passed to EC_INIT in the public subroutine EC_ETHERCAT_INIT
+' If it set to zero, alias addressing is position based
+' If it set to one, Alias address is determined by drive's dip switch
+
+common shared EC_PDOS[1024] as PDO_ENTRY ' All the PDO Entries that exist in the system after filtering
+common shared NR_PDOS as long = 0  ' number of pdos
+
+common shared Pos_Units[64] as double
+
+'*********************************************************************
+
+common shared EC_MASTER_ALREADY_CLOSED as error "MASTER IS STOPPED" 20501
+common shared EC_MASTER_GENERAL_ERROR as error "INTERNAL ERROR" 20502
+common shared EC_REQUEST_MASTER as error "INTERNAL ERROR" 20503
+common shared EC_BUFFER_TOO_SMALL as error "BUFFER TOO SMALL" 20504
+common shared EC_MASTER_STATE_NOT_PREOP as error "MASTER STATE ILEGAL. RESET DRIVES" 20505
+common shared EC_NO_MEM  as error "SYSTEM IS OUT OF MEMORY" 20506
+common shared EC_NO_BUFFER as error "INTERNAL ERROR" 20507
+common shared EC_MASTER_GET_ERROR as error "INTERNAL ERROR" 20508
+common shared EC_GET_VERSION_ERROR as error "GET VERSION ERROR" 20509
+
+common shared EC_ITIMER_START_MASTER as error "SYSTEM ERROR: RESET DRIVES" 20510
+common shared EC_MASTER_ACTIVE_ERROR as error "MASTER IS ALEADY ACTIVE" 20511
+common shared EC_MASTER_NO_DOMAIN as error "Failed to attach process data to domain. Check ECat Setup correctness" 20512
+common shared EC_MASTER_NOT_ALL_SLAVES_OPMODE as error "NOT ALL SLAVES IN OPMODE" 20513
+common shared EC_MAP_OVER_DOMAIN as error "Failed to map write process data to mc domain. Check ECat Setup correctness" 20514
+common shared EC_CREATE_DOMAIN_ERROR as error "Failed to create mc domain. Check ECat Setup correctness" 20515
+common shared EC_MASTER_OPEN_ERROR as error "INTERAL ERROR: Master Open" 20516
+common shared EC_MASTER_PLL_ERROR as error "High DC Drift detected in one of the devices on the network" 20517
+common shared EC_MASTER_PHASE_ERROR as error "PHASE ERROR, failed to set phase" 20518
+common shared EC_MASTER_NOT_INITIALIZED as error "MASTER NOT INITIALIZED. RERUN SETUP" 20519
+common shared EC_MASTER_CLOCK_SYNC_FAILED as error "FAILED TO CALIBRATE ETHERCAT MASTER CLOCK" 20520
+common shared EC_MASTER_CURRENTLY_SCANNING as error "EC MASTER IS CURRENTLY SCANNING FOR SLAVES" 20521
+common shared EC_MASTER_STATE_NOT_OP as error "ECAT MASTER IS NOT ACTIVE" 20522
+
+common shared EC_SLAVE_TOPOLOGY_MISMATCH as error "MISMATCH IN VENDOR ID / PRODUCT CODE" 20530
+common shared EC_SLAVE_NOT_FOUND as error "SLAVE NOT FOUND" 20531
+common shared EC_SLAVE_ADDRESS_ERROR as error "SLAVE ADDRESS ERROR" 20532
+common shared EC_SLAVE_ALIAS_INVALID as error "SLAVE ALIAS ERROR" 20533
+common shared EC_SLAVE_ALREADY_CONFIGURED as error "SLAVE IS ALREADY CONFIGURED" 20534
+common shared EC_SLAVE_TYPE_ERROR as error "PLEASE PROVIDE TYPE TO SLAVE: MOTION OR IOMODULE" 20535
+common shared EC_SLAVE_PARMS_ERROR as error "SLAVE PARAMETERS INVALID" 20536
+common shared EC_SLAVE_BAD_IO_BIT as error "Bad IO Bit Number" 20537
+common shared EC_SLAVE_TOPOLOGY_ERRROR as error "TOPOLOGY ERROR - Input/Output connector confusion" 20538
+common shared EC_SLAVE_TOPOLOGY_OUT_MISWIRE as note "TOPOLOGY NOTE - Last slave reports nonexistent connection" 20539
+
+
+common shared EC_PDO_PARMS_ERROR as error "INVALID PDO PARAMETERS" 20540
+common shared EC_INCOMPATIBLE_PDO_DOMAIN as error "ASSIGNED PDO TO A WRONG DOMAIN" 20541
+common shared EC_PDO_MOTION_TO_IOMODULE as error "ASSIGNED MOTION PDO TO IO MODULE"  20542
+common shared EC_PDO_INVALID_OFFSET  as error "PDO INVALID OFFSET"  20543
+common shared EC_PDO_NOT_FOUND  as error "PDO NOT FOUND"  20544
+common shared EC_PDO_SIZE_ERROR  as error "PDO SIZE ERROR"  20545
+common shared EC_PDO_DIRECTION_ERROR as error "PDO WRONG DIRECTION (INPUT/OUTPUT)" 20546
+common shared EC_PDO_MASTER_NOT_ACTIVE  as error "OPERATION IS VALID ONLY WHEN SYSTEM OPERATIONAL(MOVING)"  20547
+common shared EC_PDO_BUSY  as error "PDO is busy"  20548
+common shared EC_PDO_NO_MINIMUM  as error "MINIMUM REQUIRED PDOs NOT FOUND IN ALL THE DRIVES"  20549
+
+common shared EC_ITIMER_UPDATE_FAILED  as error "INTERNAL ERROR"  20550
+common shared EC_ITIMER_STATS_ERROR  as error "INTERNAL ERROR"  20551
+common shared EC_ITIMER_OFF  as error "INTERNAL ERROR"  20552
+common shared EC_LINK_DOWN  as error "link down"  20553
+common shared EC_OPMODE_CHANGE_FAILED  as error "Failed to change OpMode"  20554
+common shared EC_SLAVE_CANT_CLEAR_FLT as error "CANNOT CLEAR FAULT" 20555
+common shared EC_OPMODE_CHANGE_AX_MOVING  as error "Failed to change OpMode. Axis is moving!!"  20556
+
+common shared EC_SDO_READ_WRITE_ONLY  as error "SDO READ ERROR: Attempt to read a write-only object"  20560
+common shared EC_SDO_WRITE_READ_ONLY  as error "SDO WRITE ERROR: Attempt to write a read-only object"  20561
+common shared EC_WRITE_VAL_LOW  as error "SDO WRITE ERROR: Written value too low"  20562
+common shared EC_WRITE_VAL_HIGH  as error "SDO WRITE ERROR: Written value too high"  20563
+common shared EC_SDO_READ_SIZE  as error "SDO READ ERROR: Received an unreasonable amount of data"  20564
+common shared EC_SDO_GENERAL_ERROR  as error "SDO READ/WRITE ERROR: Check connection to slave."  20565
+common shared EC_SDO_WRITE_INVALID_SIZE  as error "SDO WRITE ERROR: Invalid Bit Size"  20566
+common shared EC_SDO_NOT_FOUND  as error "SDO ERROR: SDO not found. Check indices"  20567
+common shared EC_SDO_READ_TIMEOUT  as error "SDO READ ERROR: No response from drive. Request timed out"  20568
+common shared EC_SDO_WRITE_TIMEOUT  as error "SDO WRITE ERROR: No response from drive. Request timed out"  20569
+common shared EC_SDO_ABORT  as error "SDO READ/WRITE ERROR: Drive sent abort message"  20570
+common shared EC_SDO_ABORT_DRIVE_ENABLED  as error "SDO WRITE ERROR: Can't write SDO while drive is enabled"  20571
+common shared EC_DOMAIN_WC_INCOMPLETE  as error "Domain working counter is incomplete: Data in this cycle is invalid"  20572
+common shared EC_READ_REG_FAILED as error "Reading register failed"  20573
+common shared EC_WRITE_REG_FAILED as error "Writing register failed"  20574
+common shared EC_SDO_REQUEST_NOT_AVAILABLE as error "SDO ERROR: Request not available"  20575
+
+common shared EC_SDO_READ_WRITE_DOUBLE  as error "SDO READ/WRITE DOUBLE ERROR: Invalid Size. Must be 32 or 64"  20600
+common shared EC_SLAVE_INPUTS_RANGE as error "EC_SET_DRIVE_DINS_OUTS Failed: range is bigger than 11" 20601
+common shared EC_SLAVE_ASSOC_INPUTS as error "EC_SET_DRIVE_DINS Failed" 20602
+common shared EC_SLAVE_ASSOC_OUTPUTS as error "EC_SET_DRIVE_DOUTS Failed" 20603
+
+'common shared assign_pdos_auto_err_minpdos as error "Minimum number of PDOS is greater than number of must PDOS" 20604
+'common shared assign_pdos_err_entry as error "EC_ADD_PDO_ENTRY: invalid paramters" 20605
+'common shared assign_pdos_err_type as error "EC_ADD_PDO_TYPE: invalid paramters" 20606
+
+common shared ec_slave_home_err_timeout as error "EC_SLAVE_HOME: timeout input is invalid" 20610
+common shared ec_slave_home_err_enable as error "EC_SLAVE_HOME: Failed to enable drive" 20611
+common shared ec_slave_home_err_disable as error "EC_SLAVE_HOME: Failed to disable drive" 20612
+common shared ec_slave_home_err_chgOpMode6 as error "EC_SLAVE_HOME: Failed to set mode of operation to Homing" 20613
+common shared ec_slave_home_err_chgOpMode8 as error "EC_SLAVE_HOME: Failed to set mode of operation to the original mode" 20614
+
+common shared ec_slave_home_err_interrupted as error "EC_SLAVE_HOME Failed: Homing procedure was interrupted" 20615
+common shared ec_slave_home_err_target as error "EC_SLAVE_HOME Failed: Homing is attained  but target is not reached" 20616
+common shared ec_slave_home_err_velnotzero as error "EC_SLAVE_HOME Failed: Homing error occurred, velocity is not 0" 20617
+common shared ec_slave_home_err_velzero as error "EC_SLAVE_HOME Failed: Homing error occurred, velocity is 0" 20618
+common shared ec_slave_home_err_unknown as error "EC_SLAVE_HOME Failed: Homing failed due to unknown error" 20619
+common shared homing_parameters_err_badpar as error "HOMING_PARAMETERS Failed: Invalid Parameter Number" 20620
+common shared ec_slave_home_err_not_started as error "EC_SLAVE_HOME Failed: Homing procedure did not start" 20621
+common shared ec_slave_home_err_timed_out as error "EC_SLAVE_HOME Failed: Homing procedure timed-out" 20622
+
+common shared ec_iomodule_err_inputnumber as error "IOMODULE_ASSOCIATE_PDO: Invalid INPUT/OUTPUT Number. must be 0 < Number < 26" 20630
+
+common shared ec_slave_invalid_opmode as error "INVALID OPMODE ASSIGNMENT. CHECK VALUE" 20631
+common shared ec_slave_failed_change_opmode as error "FAILED CHANGING SLAVE EC OPMODE" 20632
+
+common shared EC_MASTER_NO_SLAVES_FOUND as error "MASTER COULD NOT FIND ANY SLAVES" 20633
+common shared EC_SLAVE_ENABLED as error "A SLAVE IS ENABLED. DISABLE MOTION DRIVES BEFORE EXECUTING" 20634
+common shared EC_BAD_CYCLETIME as error "ILLEGAL CYCLETIME: VALID VALUES: 4000, 2000, 1000, 500, 250" 20635
+common shared EC_incorrect_state as error "Slave is in incorrect AL state" 20636
+
+
+'Homing parameters constants
+common shared HOMING_METHOD as const long = 1
+common shared HOMING_OFFSET as const long = 2
+common shared FAST_HOMING_SPEED as const long = 3
+common shared SLOW_HOMING_SPEED as const long = 4
+common shared HOMING_ACCELERATION as const long = 5
+
+'PDOS Indices / Sub-Indices
+common shared DeviceType_1000h as const long = 0x1000
+common shared ErrorRegister_1001h as const long = 0x1001
+common shared ErrorCode_603Fh as const long = 0x603F
+common shared ControlWord_6040h as const long = 0x6040
+common shared StatusWord_6041h as const long = 0x6041
+common shared Modes_Of_Operation_6060h as const long = 0x6060
+common shared Modes_Of_Operation_Display_6061h as const long = 0x6061
+
+
+common shared Homing_Method_6098h as const long = 0x6098
+common shared Homing_Offset_607Ch as const long = 0x607C
+common shared Homing_Acc_Dec_609Ah as const long = 0x609A
+
+common shared Interpolation_Time_Period_60C2h as const long = 0x60C2
+common shared Interpolation_Time_Period_val_1 as const long = 0x1  ' sub-index of Interpolation_Time_Period
+common shared Interpolation_Time_Period_idx_2 as const long = 0x2  ' sub-index of Interpolation_Time_Period
+
+common shared Homing_Speed_6099h as const long = 0x6099
+common shared Homing_Speed_Fast_1 as const long = 0x1  ' sub-index of Homing_Speed
+common shared Homing_Speed_Slow_2 as const long = 0x2  ' sub-index of Homing_Speed
+
+' The following array is used to find out whether a certain pdo entry has been registered already.
+' This is done to prevent double registration of a pdoe index, and make sure that "must pdos" isn't blown up
+common shared pdoe_flags[400] as long 'EC_MAX_PDO_ENTRIES
+
+' This static variable counts the number of io module pdos registered by the subroutine EC_IOMODULE_ASSOCIATE_PDO
+' It acts as an index
+common shared iomodule_pdos_counter as long = 1
+
+' Debug level global variable. Set with sub Ethercat_Set_Debug_Level(byval debug_flag as long)
+common shared ethercat_lib_debug_flag as long = 0
+
+
+'****************************************************************************
+' Function Name: Ethercat_Lib_Version
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Ethercat Library Version
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function Ethercat_Lib_Version as string
+
+  Ethercat_Lib_Version = "ETHERCAT.LIB Version: " + LIB_VERSION
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: Ethercat_Set_Debug_Level
+' Description:
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Debug flag - TRUE or FALSE
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used: ethercat_lib_debug_flag
+' Revisions:
+'****************************************************************************
+public sub Ethercat_Set_Debug_Level(byval debug_flag as long)
+
+  ethercat_lib_debug_flag = debug_flag
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: ec_handle_error
+' Description: Throw the relevant error according to error code returning from Ethercat C functions
+' Called From:
+' Author: Raz Ben Yehuda
+' Input Parameters: Error ID
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+sub ec_handle_error(byval error_id as long)
+
+  if error_id then
+  error_id = error_id * -1
+
+  select case error_id
+
+    'case 20001
+      'throw EC_MASTER_ALREADY_CLOSED
+    case 20502
+      throw EC_MASTER_GENERAL_ERROR
+    case 20503
+      throw EC_REQUEST_MASTER
+    case 20504
+      throw EC_BUFFER_TOO_SMALL
+    case 20505
+      throw EC_MASTER_STATE_NOT_PREOP
+    case 20506
+      throw EC_NO_MEM
+    case 20507
+      throw EC_NO_BUFFER
+    case 20508
+      throw EC_MASTER_GET_ERROR
+    case 20509
+      throw EC_GET_VERSION_ERROR
+    case 20510
+      throw  EC_ITIMER_START_MASTER
+    case 20511
+      throw EC_MASTER_ACTIVE_ERROR
+    case 20512
+      throw EC_MASTER_NO_DOMAIN
+    case 20513
+      throw EC_MASTER_NOT_ALL_SLAVES_OPMODE
+    case 20514
+      throw EC_MAP_OVER_DOMAIN
+    case 20515
+      throw EC_CREATE_DOMAIN_ERROR
+    case 20516
+      throw EC_MASTER_OPEN_ERROR
+    case 20517
+      throw EC_MASTER_PLL_ERROR
+    case 20518
+      throw EC_MASTER_PHASE_ERROR
+    case 20519
+      throw EC_MASTER_NOT_INITIALIZED
+    case 20520
+      throw EC_MASTER_CLOCK_SYNC_FAILED
+    case 20521
+      throw EC_MASTER_CURRENTLY_SCANNING
+	CASE 20522
+	  throw EC_MASTER_STATE_NOT_OP
+    case 20531
+      throw EC_SLAVE_NOT_FOUND
+    case 20532
+      throw EC_SLAVE_ADDRESS_ERROR
+    case 20533
+      throw EC_SLAVE_ALIAS_INVALID
+    case 20534
+      throw EC_SLAVE_ALREADY_CONFIGURED
+    case 20535
+      throw EC_SLAVE_TYPE_ERROR
+    case 20536
+      throw EC_SLAVE_PARMS_ERROR
+    case 20538
+      throw EC_SLAVE_TOPOLOGY_ERRROR
+    case 20539
+      throw EC_SLAVE_TOPOLOGY_OUT_MISWIRE
+    case 20540
+      throw EC_PDO_PARMS_ERROR
+    case 20541
+      throw EC_INCOMPATIBLE_PDO_DOMAIN
+    case 20542
+      throw EC_PDO_MOTION_TO_IOMODULE
+    case 20543 
+      throw EC_PDO_INVALID_OFFSET
+    case 20544
+      throw EC_PDO_NOT_FOUND
+    case 20545
+      throw EC_PDO_SIZE_ERROR
+    case 20546
+      throw EC_PDO_DIRECTION_ERROR
+    case 20547
+      throw  EC_PDO_MASTER_NOT_ACTIVE
+    case 20548  
+      throw EC_PDO_BUSY
+    case 20550
+      throw EC_ITIMER_UPDATE_FAILED
+    case 20551 
+      throw EC_ITIMER_STATS_ERROR
+    case 20552
+      throw EC_ITIMER_OFF
+    case 20553
+      throw EC_LINK_DOWN
+    case 20560
+      throw EC_SDO_READ_WRITE_ONLY
+    case 20561
+      throw EC_SDO_WRITE_READ_ONLY
+    case 20562
+      throw EC_WRITE_VAL_LOW
+    case 20563
+      throw EC_WRITE_VAL_HIGH
+    case 20564
+      throw EC_SDO_READ_SIZE
+    case 20565
+      throw EC_SDO_GENERAL_ERROR
+    case 20566
+      throw EC_SDO_WRITE_INVALID_SIZE
+    case 20567
+      throw EC_SDO_NOT_FOUND
+    case 20568
+      throw EC_SDO_READ_TIMEOUT
+    case 20569
+      throw EC_SDO_WRITE_TIMEOUT
+    case 20570
+      throw EC_SDO_ABORT
+    case 20571
+      throw EC_SDO_ABORT_DRIVE_ENABLED
+    case 20572
+      throw EC_DOMAIN_WC_INCOMPLETE
+    case 20573
+      throw EC_READ_REG_FAILED
+    case 20574
+      throw EC_WRITE_REG_FAILED
+    case 20575
+	  throw EC_SDO_REQUEST_NOT_AVAILABLE
+
+  end select
+
+  end if
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_INIT_SLAVES
+' Description: Prepare data structures relevant for slaves setup according to type
+'         The sub tries to read object 0x1000, if it fails it classifies the slave as
+'         an IO module.
+'         If the object returns 402 the slave is a classified as a Motion Drive.
+'         In any other case the slave is relate to as an IO module.
+'
+' Called From: EC_ETHERCAT_INIT
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+sub EC_INIT_SLAVES(byval busid as long)
+
+  dim i as long
+  dim ret as long
+
+  nr_slaves = EC_Num_Of_Slaves
+  MotSlaves = 0
+  IOSlaves = 0
+  for i = 1 to EC_MAX_SLAVES
+    ETSLAVES[i]->et_slaveid = -1
+    ETSLAVES[i]->et_busid = -1
+    ETSLAVES[i]->et_slavetype = -1
+    ETSLAVES[i]->et_nr_pdo_entries = 0
+    ETSLAVES[i]->et_opmode = -1
+  ETSLAVES[i]->et_in_use = 0
+  next
+
+  for i = 1 to nr_slaves
+    ETSLAVES[i]->et_slaveid = i
+    ETSLAVES[i]->et_busid = busid
+    
+    ret = 0
+
+    try
+      ret = EC_SDO_READ(ETSLAVES[i]->et_slaveid, DeviceType_1000h, 0) ' if no error is thrown on attempt to read object 0x1000, slave is a motion drive
+    catch else
+      ETSLAVES[i]->et_slavetype = ECAT_IOSLAVE  '  if an error is caught, this slave is an IO module
+      IOSlaves = IOSlaves + 1
+      print "Failed to read object 0x1000. Assuming IO Slave <";IOSlaves;">"
+      ret = -1
+    end try
+
+    if (ret band 0xFFFF) = DS402 then  '  Found a motion drive
+
+      ETSLAVES[i]->et_slavetype = ECAT_MOTIONSLAVE
+      MotSlaves = MotSlaves + 1
+      print "Found Motion Slave <";MotSlaves;">"
+
+    else
+
+      if ret <> -1 then' for example   ret = 0x1389  -  Found an IO Slave
+
+        ETSLAVES[i]->et_slavetype = ECAT_IOSLAVE
+        IOSlaves = IOSlaves + 1
+        print "Found IO Slave <";IOSlaves;">"
+      
+      end if
+
+    end if
+
+  next
+
+end sub
+
+
+
+
+'****************************************************************************
+' Function Name: EC_FIND_SLAVE
+' Description: Find a slave according to slaveid in ETSLAVES array
+' Called From: SET PDO OBJECTS subroutines
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave ID
+' Output Parameters: None
+' Return Value: Index in ETSLAVES array as long
+' Algorithm: 
+' Global Variables Used: ETSLAVES[*]
+' Revisions:
+'****************************************************************************
+function EC_FIND_SLAVE(byval busid as long, byval slaveid as long) as long
+
+  dim num_of_slaves as long = 0
+  dim i as long
+  
+  EC_FIND_SLAVE = -1
+
+  num_of_slaves = EC_Num_Of_Slaves
+  
+  for i = 1 to num_of_slaves
+    if (ETSLAVES[i]->et_slaveid = slaveid ) then
+      if (ETSLAVES[i]->et_busid = busid) then
+        EC_FIND_SLAVE = i   
+      end if
+    end if
+  next
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: ET_FIND_OBJECT_IN_SLAVE
+' Description: Find a certain PDO per slave
+' Called From: SET_RPDO_TYPE, SET_TPDO_TYPE
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Index of PDO in buffer
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+function ET_FIND_OBJECT_IN_SLAVE(byval slaveindex as long, byval index as long, byval subindex as long) as long
+
+  dim i as long
+  
+  ET_FIND_OBJECT_IN_SLAVE = -1
+
+  for i = 1 to EC_MAX_PDO_TYPES
+
+    if (pdo_map[slaveindex][i]->et_pdo_index = index) then
+      if (pdo_map[slaveindex][i]->et_pdo_subindex = subindex) then
+        ET_FIND_OBJECT_IN_SLAVE = i
+      end if
+    end if  
+
+  next
+
+end function
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_PCMD_OBJECT
+' Description: Associate a PCMD with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_PCMD_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_PCMD
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_PFB_OBJECT
+' Description: Associate a PFB with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_PFB_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_PFB
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_DIN_OBJECT
+' Description: Associate a Digital inputs with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_DIN_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_DIN
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_CTRL_OBJECT
+' Description: Associate ControlWord with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_CTRL_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_CTRL
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_STATUS_OBJECT
+' Description: Associate StatusWord with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_STATUS_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_STATUS
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_VCMD_OBJECT
+' Description: Associate VCMD with a certain PDO
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_VCMD_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_VCMD
+
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_PEXT_OBJECT
+' Description: Associate PEXT with a certain PDO
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_PEXT_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_PEXT
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_TRQFBK_OBJECT
+' Description: Associate TRQFBK with a certain PDO
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_TRQFBK_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_TRQFBK
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_TRQCMD_OBJECT
+' Description: Associate TRQFBK with a certain PDO
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_TRQCMD_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_TRQCMD
+
+end sub
+
+'****************************************************************************
+' Subroutine Name: EC_SET_TRQDMND_OBJECT
+' Description: Associate TRQDMND (torque demand produced by drive itself) with a certain PDO
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_TRQDMND_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_TRQDMND
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_TRQADDCMD_OBJECT
+' Description: Associate a TRQADDCMD with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_TRQADDCMD_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_TRQADDCMD
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_VADDCMD_OBJECT
+' Description: Associate a VADDCMD with a certain PDO 
+' Called From: EC_INIT_MOTION_SLAVE
+' Author: Raz Ben Yehuda
+' Input Parameters: Bus ID, Slave index, PDO index, PDO sub-index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: pdo_map[*][*]
+' Revisions:
+'****************************************************************************
+public sub EC_SET_VADDCMD_OBJECT(byval busid as long, byval slaveid as long, byval index as long, byval subindex as long)
+
+	dim i as long
+
+	ETSLAVES[slaveid]->et_nr_pdo_entries = ETSLAVES[slaveid]->et_nr_pdo_entries + 1
+
+	i = EC_FIND_SLAVE(busid, slaveid)
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_index = index
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_pdo_subindex = subindex
+	pdo_map[i][ETSLAVES[slaveid]->et_nr_pdo_entries]->et_type = EC_PDO_VADDCMD
+
+end sub
+
+'****************************************************************************
+' Subroutine Name: EC_CREATE_PDOS_MAP
+' Description: create a map of the process data, which PDO belong to which slave
+' Called From:
+' Author: Raz Ben Yehuda
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+sub EC_CREATE_PDOS_MAP
+
+	dim ret as long
+	dim i as long
+
+	for i = 1 to NR_PDOS
+
+		if EC_PDOS[i]->pdo_index <> 0 then
+
+			EC_SET_IO_DATA(EC_PDOS[i]->pdo_iobit, EC_PDOS[i]->pdo_io_range, EC_PDOS[i]->pdo_io_offset,EC_PDOS[i]->pdo_io_hwassist)
+
+			ret = EC_ADD_PDO_ENTRY(EC_PDOS[i]->pdo_slave, EC_PDOS[i]->pdo_index, EC_PDOS[i]->pdo_subindex, EC_PDOS[i]->pdo_domain)
+			call ec_handle_error(ret)
+
+			ret = EC_SET_PDO_TYPE(EC_PDOS[i]->pdo_slave, EC_PDOS[i]->pdo_index, EC_PDOS[i]->pdo_subindex, EC_PDOS[i]->pdo_type)
+			call ec_handle_error(ret)
+
+		end if
+
+	next
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_SLAVE
+' Description: Print complete slave's info
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave's address
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE(byval addr as long) as string
+
+  dim ret as long
+  dim buffer as string = string$(1000,0)
+
+  ret = PRINT_SLAVE(buffer, 1000, addr)
+  call ec_handle_error(ret)
+  EC_SLAVE =  buffer
+
+end function
+
+'****************************************************************************
+' Subroutine Name: EC_MASTER
+' Description: Print complete master's info
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_MASTER as string
+
+	dim ret as long
+	dim buffer as string = string$(4000,0)
+
+	ret = EC_MASTER_STATUS(buffer, 4000)
+	call ec_handle_error(ret)
+
+	EC_MASTER = buffer
+
+end function
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SLAVES
+' Description: Prints a 1 liner info about all the slaves in the system
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave's address
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_SLAVES as string
+
+  dim ret as long
+  dim buffer as string = string$(5000,0)
+
+  ret = EC_PRINT_SLAVES(buffer, 5000)
+  call ec_handle_error(ret)
+  EC_SLAVES = buffer
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_VER
+' Description: Returns etherlab master version as a string
+' Called From:
+' Author: Yevgeny
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: String
+' Algorithm:
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_VER as string
+
+  dim ret as long
+  dim buffer as string = string$(1000,0)
+
+  ret = EC_VERSION(buffer, 1000)
+  call ec_handle_error(ret)
+
+  EC_VER = buffer
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: EC_USE_SLAVE
+' Description: Use a specific slave in the topology
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave's address
+'          Vendor's ID
+'          Product's ID
+'          Slave type
+'          DC Sync - TRUE or FALSE
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_USE_SLAVE(byval slaveaddress as long, byval vendor as long, \
+                byval product as long, byval slave_type as string, byval dc_sync as long)
+
+  dim ret as long = 0 
+
+  ret = EC_CREATE_SLAVE(slaveaddress, vendor, product, slave_type, dc_sync)
+  call ec_handle_error(ret)
+
+  ETSLAVES[slaveaddress]->et_in_use = 1  '  Mark this slave as "in use". EC_ASSIGN_PDOS_AUTO will register PDOs only of slaves that are in use.
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_WRITE_ALIAS
+' Description: Assign an alias name to a slave (has no relation to dip switch)
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Position in topology
+'                   Alias number to be assigned to slave
+'                   Vendor's ID
+'                   Product's ID
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_WRITE_ALIAS(byval position as long, byval alias as long ,\
+            byval vendor as long , byval product as long)
+
+  dim ret as long = 0 
+
+  ret = EC_ALIAS_SLAVE(position, alias, vendor, product)
+  call ec_handle_error(ret)
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_STOPMASTER
+' Description: Move the master from op to preop - erases the entire database that was created
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_STOPMASTER
+
+  dim ret as long
+
+  ' Disable all the axes
+  sys.en = 0
+  sys.en = 1
+
+  iomodule_pdos_counter = 1
+  ret = EC_STOP_MASTER()
+  call ec_handle_error(ret)
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_STARTMASTER
+' Description: Activate the master
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_STARTMASTER
+
+  dim retVal as long = 0
+
+  print "Starting EtherCAT Master. Please wait, this may take a few minutes..."
+
+  call EC_ASSIGN_PDOS_AUTO
+
+  ' After telling the master with which slaves we would like to work, we create the PDO map
+  call EC_CREATE_PDOS_MAP
+
+  call EC_SET_CYCLETIME  ' Set EtherCAT cycle time
+
+  retVal = EC_START_MASTER()
+
+  call ec_handle_error(retVal)
+
+  print "EtherCAT Master Loaded"
+
+  ' Make sure all the drives were raised to OPMODE successfully
+  if EC_VALIDATE_AL_STATE(EC_STATE_OP) = -1 then
+    throw EC_MASTER_NOT_ALL_SLAVES_OPMODE
+  end if
+
+  ' Make sure that in all the drives the minimum required PDO's are mapped
+  if EC_VALIDATE_MINIMUM_PDOS = -1 then
+    throw EC_PDO_NO_MINIMUM
+  end if
+
+end sub
+
+
+
+'****************************************************************************
+' Function Name: EC_SDO_READ
+' Description: Read an SDO - independent from opmode
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave address
+'                   SDO index
+'                   SDO sub-index
+' Output Parameters: None
+' Return Value: Value read from PDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_SDO_READ(byval slaveaddres as long, byval index as long,\
+            byval subindex as long) as long
+
+  dim counter as long = 0
+  dim retVal as long = -1
+  dim SDO_READ_RETVAL as long = 0
+
+
+  while (retVal <> 0) and (counter <= EC_SDO_RETRIES)
+
+    retVal = SDO_READ(slaveaddres, index, subindex, SDO_READ_RETVAL)
+
+    if retVal = -20567 then
+      throw EC_SDO_NOT_FOUND
+    end if
+
+    'if EC_SDO_REQUEST_NOT_AVAILABLE or EC_SDO_READ_TIMEOUT
+    'if retVal = -20575 or retVal = -20568 then
+    '  sleep bus[0].ctim '  sleep 1 bus cycle time before retrying
+    'end if
+
+    counter = counter +1
+
+  end while
+
+  call ec_handle_error(retVal)
+  EC_SDO_READ = SDO_READ_RETVAL
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_SDO_READ_DOUBLE
+' Description: Read an SDO of types double or float
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave address
+'                   SDO index
+'                   SDO sub-index
+' Output Parameters: None
+' Return Value: Value read from PDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_SDO_READ_DOUBLE(byval slaveaddres as long, byval index as long,\
+            byval subindex as long, byval varSize as long) as double
+
+  dim counter as long = 0
+  dim retVal as long = -1
+  dim SDO_READ_DOUBLE_RETVAL as double = 0
+
+  if (varSize <> 64) and (varSize <> 32) then
+    throw EC_SDO_READ_WRITE_DOUBLE
+  end if
+
+  while (retVal <> 0) and (counter <= EC_SDO_RETRIES)
+
+    retVal = SDO_READ_FLOAT(slaveaddres, index, subindex, varSize, SDO_READ_DOUBLE_RETVAL)
+    call ec_handle_error(retVal)
+
+    counter = counter +1
+
+  end while
+
+  call ec_handle_error(retVal)
+
+  EC_SDO_READ_DOUBLE = SDO_READ_DOUBLE_RETVAL
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_SDO_READ_STRING
+' Description: Read an SDO - independent from opmode
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave address
+'                   SDO index
+'                   SDO sub-index
+' Output Parameters: str_length - length of the returning string
+' Return Value: String occupied with bytes returning from SDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_SDO_READ_STRING(byval slaveaddres as long, byval index as long,\
+            byval subindex as long, str_length as long) as string
+
+  dim counter as long = 0
+  dim ret_String as string = ""
+  dim retVal as long = -1
+
+  ret_String = space$(1024)
+
+  while (retVal <> 0) and (counter <= EC_SDO_RETRIES)
+
+    retVal = SDO_READ_STRING(slaveaddres, index, subindex, ret_String, str_length)
+    call ec_handle_error(retVal)
+
+    counter = counter +1
+
+  end while
+
+  call ec_handle_error(retVal)
+  EC_SDO_READ_STRING = ret_String
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: EC_FOE_WRITE
+' Description: Write file to slave over FoE
+' Called From: 
+' Author: Rasty Slutsker
+' Input Parameters: Slave address
+'                   File name
+'
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_FOE_WRITE(byval slaveaddress as long, byval file_name as string)
+
+  dim retVal as long = -1
+  dim fd as long=1
+'search free file descriptor
+  while isopen(fd)
+    fd=fd+1
+  end while
+  open file_name mode="r" as #fd
+  close #fd
+    
+  retVal = FOE_WRITE(slaveaddress, file_name)
+  if retVal <>0 then
+    call ec_handle_error(retVal)
+  end if  
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SDO_WRITE
+' Description: Write an SDO - independent from opmode
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave address
+'                   SDO index
+'                   SDO sub-index
+'                   SDO size in bits
+'                   New value to be written
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_SDO_WRITE(byval slaveaddress as long, byval index as long, \
+            byval subindex as long,byval size_bits as long, byval new_val as long)
+
+  dim counter as long = 0
+  dim retVal as long = -1
+
+  if (size_bits <> 8) and (size_bits <> 16) and (size_bits <> 32) and (size_bits <> 64) then
+    throw EC_SDO_WRITE_INVALID_SIZE
+  end if
+
+  while (retVal <> 0) and (counter <= EC_SDO_RETRIES)
+
+    retVal = SDO_WRITE(slaveaddress, index, subindex, size_bits, new_val)
+    call ec_handle_error(retVal)
+
+    'if retVal = -20567 then
+    '  throw EC_SDO_NOT_FOUND
+    'end if
+
+    'if EC_SDO_REQUEST_NOT_AVAILABLE or EC_SDO_WRITE_TIMEOUT
+    'if retVal = -20575 or retVal = -20569 then
+    '  sleep bus[0].ctim '  sleep 1 bus cycle time before retrying
+    'end if
+
+    counter = counter + 1
+
+  end while
+
+  call ec_handle_error(retVal)
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SDO_WRITE_STRING
+' Description: Write a string to an object via SDO
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   SDO index
+'                   SDO sub-index
+'                   String occupied with the data to be written
+'
+' Example of use:
+'          -->common shared ec_str as string
+'          -->ec_str = chr$(0xEF) + chr$(0xBE) + chr$(0xAD) + chr$(0xDE)
+'          -->call EC_SDO_WRITE_STRING(1, 0X60FE, 0X2, ec_str)
+'          -->?ec_sdo_read(1, 0X60FE, 0X2) hex
+'          0xDEADBEEF
+'          -->
+'
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_SDO_WRITE_STRING(byval slaveaddress as long, byval index as long, \
+            byval subindex as long, byval str_to_write as string)
+
+  dim counter as long = 0
+  dim retVal as long = -1
+
+  while (retVal <> 0) and (counter <= EC_SDO_RETRIES)
+
+    retVal = SDO_WRITE_STRING(slaveaddress, index, subindex, str_to_write)
+    call ec_handle_error(retVal)
+
+    counter = counter + 1
+
+  end while
+
+  call ec_handle_error(retVal)
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SDO_WRITE_DOUBLE
+' Description: Write an SDO - independent from opmode
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave address
+'                   SDO index
+'                   SDO sub-index
+'                   SDO size in bits
+'                   New value to be written
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_SDO_WRITE_DOUBLE(byval slaveaddress as long, byval index as long, \
+            byval subindex as long, byval varSize as long, byval new_val as double)
+
+  dim counter as long = 0
+  dim retVal as long = -1
+
+  if (varSize <> 64) and (varSize <> 32) then
+    throw EC_SDO_READ_WRITE_DOUBLE
+  end if
+
+  while (retVal <> 0) and (counter <= EC_SDO_RETRIES)
+
+    retVal = SDO_WRITE_FLOAT(slaveaddress, index, subindex, varSize, new_val)
+    call ec_handle_error(retVal)
+
+    counter = counter + 1
+
+  end while
+
+  call ec_handle_error(retVal)
+  
+end sub
+
+
+
+
+'****************************************************************************
+' Function Name: EC_PDO_READ
+' Description: Read a PDO in REALTIME
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+' Output Parameters: None
+' Return Value: Value read from PDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_PDO_READ(byval slaveaddres as long, byval index as long, byval subindex as long) as long
+
+  dim ret as long
+  dim PDO_READ_RETVAL[1] as long
+
+  PDO_READ_RETVAL[1] = 0
+  ret = PDO_READ(slaveaddres, index, subindex, PDO_READ_RETVAL)
+  call ec_handle_error(ret)
+  EC_PDO_READ = PDO_READ_RETVAL[1]
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_PDO_READ_DOUBLE
+' Description: Read 64-bit Floting point PDO in REALTIME
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+' Output Parameters: None
+' Return Value: Value read from PDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_PDO_READ_DOUBLE(byval slaveaddres as long, byval index as long, byval subindex as long) as double
+
+  dim ret as long
+  dim PDO_READ_RETVAL[1] as double
+
+  PDO_READ_RETVAL[1] = 0
+  ret = PDO_READ_Double(slaveaddres, index, subindex, PDO_READ_RETVAL)
+  call ec_handle_error(ret)
+  EC_PDO_READ_DOUBLE = PDO_READ_RETVAL[1]
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_PDO_READ_DOUBLE
+' Description: Read 32-bit Floting point PDO in REALTIME, 32-bit real is converted to double
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+' Output Parameters: None
+' Return Value: Value read from PDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_PDO_READ_REAL(byval slaveaddres as long, byval index as long, byval subindex as long) as double
+
+  dim ret as long
+  dim PDO_READ_RETVAL[1] as double
+
+  PDO_READ_RETVAL[1] = 0
+  ret = PDO_READ_Real(slaveaddres, index, subindex, PDO_READ_RETVAL)
+  call ec_handle_error(ret)
+  EC_PDO_READ_REAL = PDO_READ_RETVAL[1]
+
+end function
+
+'****************************************************************************
+' Function Name: EC_PDO_READ_N
+' Description: Read an object of N bytes in size via PDO.
+'         This function is designed for objects larger that 32 bits.
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+' Output Parameters: Returned values array - at least 1 long in length
+' Return Value: 0 if successful, error code if failed
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_PDO_READ_N(byval slaveaddres as long, byval index as long, byval subindex as long, retVal_array[*] as long) as long
+
+  dim ret as long
+
+  ret = PDO_READ(slaveaddres, index, subindex, retVal_array)
+  call ec_handle_error(ret)
+  EC_PDO_READ_N = ret
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: EC_PDO_WRITE
+' Description: Write a PDO in REALTIME
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+'                   New value to be written
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_PDO_WRITE(byval slaveaddress as long, byval index as long, byval subindex as long, byval new_val as long)
+
+  dim ret as long
+
+  ret = PDO_WRITE(slaveaddress, index, subindex, new_val)
+  call ec_handle_error(ret)
+
+end sub
+
+'****************************************************************************
+' Subroutine Name: EC_PDO_WRITE_Double
+' Description: Write 64-bit floating point PDO in REALTIME
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+'                   New value to be written
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_PDO_WRITE_DOUBLE(byval slaveaddress as long, byval index as long, byval subindex as long, byval new_val as double)
+
+  dim ret as long
+
+  ret = PDO_WRITE_Double(slaveaddress, index, subindex, new_val)
+  call ec_handle_error(ret)
+
+end sub
+
+'****************************************************************************
+' Subroutine Name: EC_PDO_WRITE_Double
+' Description: Write 32-bit floating point PDO in REALTIME, double value is internally converted to 32-bit floating point
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+'                   New value to be written
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_PDO_WRITE_Real(byval slaveaddress as long, byval index as long, byval subindex as long, byval new_val as double)
+
+  dim ret as long
+
+  ret = PDO_WRITE_Real(slaveaddress, index, subindex, new_val)
+  call ec_handle_error(ret)
+
+end sub
+'****************************************************************************
+' Subroutine Name: EC_PDO_WRITE_LONG_LONG
+' Description: Write a PDO in REALTIME
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                   PDO index
+'                   PDO sub-index
+'                   New value low 32 bits to be written 
+'                   New value high 32 bits to be written 
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_PDO_WRITE_LONG_LONG(byval slaveaddress as long, byval index as long, byval subindex as long, byval new_valL as long,byval new_valH as long)
+
+  dim ret as long
+
+  ret = PDO_WRITE_LONG_LONG(slaveaddress, index, subindex, new_valL, new_valH)
+  call ec_handle_error(ret)
+
+end sub
+
+
+
+
+'****************************************************************************
+' Function Name: EC_GET_IO_MODULE_IN_OUT
+' Description: Get state of an IO module input or output - on or off (1 or 0)
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                    PDO index
+'                    PDO sub-index
+' Output Parameters: None
+' Return Value: Value read from PDO
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_GET_IO_MODULE_IN_OUT(byval slaveaddress as long, byval index as long, byval subindex as long) as long
+
+  dim ret as long
+
+  ret = GET_IO_MODULE_IN_OUT(slaveaddress, index, subindex)
+  call ec_handle_error(ret)
+  EC_GET_IO_MODULE_IN_OUT = ret BAND 0x1
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_IO_MODULE_OUTPUT
+' Description: Set a state of an IO module output - on/off
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'                    PDO index
+'                    PDO sub-index
+'                    New value to be written
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_SET_IO_MODULE_OUTPUT(byval slaveaddress as long, byval index as long, byval subindex as long, byval new_val as long)
+
+  dim ret as long
+
+  ret = SET_IO_MODULE_OUTPUT(slaveaddress, index, subindex, new_val)
+  call ec_handle_error(ret)
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: PDO_FILL
+' Description: Populate a field of PDO entry
+' Called From: sub EC_ASSIGN_PDOS_AUTO
+' Author: Raz Ben Yehuda
+' Input Parameters: PDOs array
+'                    PDO index in the array
+'                    Slave ID
+'                    PDO index
+'                    PDO sub-index
+'                    PDO domain (drive salve or IO slave)
+'                    PDO direction (RX or TX)
+'                    Slave index
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+sub PDO_FILL(   byval idx as long, \
+                byval pdo_slaveid as long, \
+                byval pdo_index as long, \
+                byval pdo_subindex as long, \
+                byval pdo_domain as long, byval pdo_dir as long, byval slave_idx as long) 
+
+  dim first_sys_io as long = 0
+  dim range as long = 0
+  dim offset as long = 0
+  dim retVal as long = 0
+  dim hwassist as long  = 0
+
+  EC_PDOS[idx]->pdo_slave    = pdo_slaveid
+  EC_PDOS[idx]->pdo_index    = pdo_index
+  EC_PDOS[idx]->pdo_subindex = pdo_subindex
+  EC_PDOS[idx]->pdo_domain   = pdo_domain
+  EC_PDOS[idx]->pdo_dir      = pdo_dir
+  EC_PDOS[idx]->pdo_type     = GET_PDO_TYPE(slave_idx, pdo_index, pdo_subindex)
+
+  retVal = GET_IO_DATA(pdo_slaveid, pdo_index, pdo_subindex, first_sys_io, range, offset,hwassist)
+  EC_PDOS[idx]->pdo_iobit = first_sys_io
+  EC_PDOS[idx]->pdo_io_range = range
+  EC_PDOS[idx]->pdo_io_offset = offset
+  EC_PDOS[idx]->pdo_io_hwassist = hwassist
+
+  if TRUE = ethercat_lib_debug_flag then
+  call DUMP_PDO(pdo_slaveid, pdo_index ,pdo_subindex, pdo_dir, EC_PDOS[idx]->pdo_type, pdo_domain)
+  end if
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: DUMP_PDO
+' Description: Print PDO info
+' Called From: PDO_FILL
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave ID
+'                    PDO index
+'                    PDO sub-index
+'                    PDO direction (RX or TX)
+'                    PDO type
+'                    PDO domain (drive salve or IO slave)
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+sub DUMP_PDO(byval pdo_slave as long,byval pdo_index as long,\     
+                byval pdo_subindex as long,byval pdo_dir as long, \
+                    byval pdo_type as long, byval pdo_domain as long)
+
+  print " Slave " pdo_slave 
+  print " Index " pdo_index hex
+  print " Subindex " pdo_subindex hex
+  print " Direction " pdo_dir
+  print "Type " pdo_type
+  print "Pdo Domain" pdo_domain
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_ASSIGN_PDOS_AUTO
+' Description: loads all PDO ENTRIES to an array of PDO_ENTRIES
+' then check pdo correctness
+' struct aico_slave 
+'   u8  slaveid
+'   u8   busid
+'   u16  unused
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: None
+' Output Parameters: None
+' Return Value:    Number of PDOS found
+' Algorithm: 
+' Global Variables Used: EC_PDOS - An array of PDO_ENTRY
+' Revisions:
+'****************************************************************************
+public sub EC_ASSIGN_PDOS_AUTO
+
+	dim nr_pdo_entries as long
+	dim i as long
+	dim jj as long
+	dim l as long = 1
+	dim slaves[64] as long
+	dim pdo_entries[400] as long  ' EC_MAX_PDO_ENTRIES!
+	dim slaveid as long
+	dim busid as long
+	dim pdo_index as long
+	dim pdo_subindex as long
+	dim pdo_dir as long
+	dim pdo_slave as long
+	dim slave_domain as long
+
+
+	NR_PDOS = 0
+	nr_slaves = EC_GET_SLAVES_ID(slaves)
+
+	for  i = 1 to nr_slaves
+
+		slaveid =  slaves[i] band 0x0000FFFF 
+		busid   = (slaves[i] band 0xFFFF0000 ) shr 16
+		nr_pdo_entries = EC_PDO_ENTRIES(busid, slaveid, pdo_entries) ' retrieve all the PDOs that exist in the slave
+
+		if nr_pdo_entries < 0 then
+			call ec_handle_error(nr_pdo_entries)
+		end if 
+
+
+		ETSLAVES[i]->et_slaveid = slaveid
+		ETSLAVES[i]->et_busid = busid
+
+		for l = 1 to EC_MAX_PDO_ENTRIES
+			pdoe_flags[l] = 0
+		next
+
+		for jj = 1 to nr_pdo_entries
+
+			pdo_slave    = slaveid
+			pdo_index    = pdo_entries[jj] band 0x0000FFFF
+			pdo_subindex = (pdo_entries[jj] band 0x00FF0000) shr 16
+			pdo_dir      = (pdo_entries[jj] band 0x01000000) shr 24 ' 1 means master output
+
+
+			if ETSLAVES[i]->et_slavetype = ECAT_MOTIONSLAVE then  '  This slave is a Motion Drive
+				slave_domain = EC_MOTION_DOMAIN
+			end if
+
+			if ETSLAVES[i]->et_slavetype = ECAT_IOSLAVE then  '  This slave is an IO Module
+				slave_domain = EC_IO_DOMAIN
+			end if
+
+			if TRUE = ETSLAVES[i]->et_in_use then
+
+				if TRUE = ethercat_lib_debug_flag then
+					print "******************************************"
+				end if
+
+				NR_PDOS = NR_PDOS + 1
+				call PDO_FILL(NR_PDOS, pdo_slave, pdo_index, pdo_subindex, slave_domain, pdo_dir, i)
+
+			end if
+
+		next
+
+	next
+
+end sub
+
+
+'****************************************************************************
+' Function Name: IS_MUST_MOTION_OBJECT
+' Description: This function finds out whether a PDO is a MUST PDO i.e. StatusWord, ControlWord, PCMD and PFB
+' Called From: EC_ASSIGN_PDOS_AUTO
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index
+'                    PDO index
+'                    PDO sub-index
+' Output Parameters: None
+' Return Value: 1 if PDO is a MUST PDO, 0 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function IS_MUST_MOTION_OBJECT(byval slaveindex as long, \
+            byval index as long,byval subindex as long) as long
+
+  dim i as long
+
+  IS_MUST_MOTION_OBJECT = 0
+
+  if (ETSLAVES[slaveindex]->et_slavetype <> ECAT_MOTIONSLAVE) then
+    goto MUST_OBJECT
+  end if
+
+  for i = 1 to EC_PDO_CTRL
+    if (pdo_map[slaveindex][i]->et_pdo_index = index) then
+      if (pdo_map[slaveindex][i]->et_pdo_subindex = subindex) then
+        IS_MUST_MOTION_OBJECT = 1
+        goto MUST_OBJECT
+      end if
+    end if
+  next
+
+  IS_MUST_MOTION_OBJECT = 0
+
+MUST_OBJECT:
+
+end function
+
+
+
+
+'****************************************************************************
+' Function Name: IS_MOTION_PDO
+' Description: This function finds out whether a PDO is a Motion PDO
+' Called From: IS_VALID_MOTION_OBJECT
+' Author: Raz Ben Yehuda
+' Input Parameters: PDO index
+' Output Parameters: None
+' Return Value: 1 if PDO is a Motion PDO, 0 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function IS_MOTION_PDO(byval index as long) as long
+
+	IS_MOTION_PDO = 0
+
+	select case index
+
+		case EC_PFB_INDEX_6064h, 0x6864, 0x7064, 0x7864, 0x8064, 0x8864, 0x9064, 0x9864
+			IS_MOTION_PDO =1
+		case EC_PCMD_INDEX_607Ah, 0x687A, 0x707A, 0x787A, 0x807A, 0x887A, 0x907A, 0x987A
+			IS_MOTION_PDO =1       
+		case EC_STATUS_INDEX_6041h, 0x6841, 0x7041, 0x7841, 0x8041, 0x8841, 0x9041, 0x9841
+			IS_MOTION_PDO =1
+		case EC_CTRL_INDEX_6040h, 0x6840, 0x7040, 0x7840, 0x8040, 0x8840, 0x9040, 0x9840
+			IS_MOTION_PDO =1
+		case EC_VCMD_INDEX_6081h, 0x6881, 0x7081, 0x7881, 0x8081, 0x8881, 0x9081, 0x9881
+			IS_MOTION_PDO =1
+		case 0x60c1, 0x68c1, 0x70c1, 0x78c1, 0x80c1, 0x88c1, 0x90c1, 0x98c1
+			IS_MOTION_PDO =1 
+		case 0x60ff, 0x68ff, 0x70ff, 0x78ff, 0x80ff, 0x88ff, 0x90ff, 0x98ff
+			IS_MOTION_PDO =1
+		case 0x60b1, 0x68b1, 0x70b1, 0x78b1, 0x80b1, 0x88b1, 0x90b1, 0x98b1
+			IS_MOTION_PDO =1 
+		case 0x60b2, 0x68b2, 0x70b2, 0x78b2, 0x80b2, 0x88b2, 0x90b2, 0x98b2
+			IS_MOTION_PDO =1 
+
+	end select
+
+end function
+
+
+
+
+'****************************************************************************
+' Function Name: IS_PDOE_REGISTERED
+' Description: This function finds out whether a PDO Entry has already been registered
+'               in the data structure.
+' Called From: EC_ASSIGN_PDOS_AUTO
+' Author: Nir Geller
+' Input Parameters: PDO Entry index
+' Output Parameters: None
+' Return Value: 1 if PDOe is already registered, 0 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function IS_PDOE_REGISTERED(byval index as long) as long
+
+  dim i as long = 1
+
+  IS_PDOE_REGISTERED = 0
+
+  while i < EC_MAX_PDO_ENTRIES and pdoe_flags[i] <> 0
+    if index = pdoe_flags[i] then
+      IS_PDOE_REGISTERED = 1
+      goto DONE
+    end if
+    i = i + 1
+  end while
+
+  if i < EC_MAX_PDO_ENTRIES then
+    pdoe_flags[i] = index
+  end if
+
+DONE:
+
+end function
+
+
+'****************************************************************************
+' Function Name: IS_VALID_MOTION_OBJECT
+' Description: This function finds out whether a PDO is a VALID Motion PDO of a certain slave
+' Called From: EC_ASSIGN_PDOS_AUTO
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index
+'                    PDO index
+'                    PDO sub-index
+' Output Parameters: None
+' Return Value: 1 if PDO is a valid Motion PDO, 0 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function IS_VALID_MOTION_OBJECT(byval slaveindex as long, \
+              byval index as long,byval subindex as long) as long
+
+  dim i as long
+
+  IS_VALID_MOTION_OBJECT = 0
+
+  if (ETSLAVES[slaveindex]->et_slavetype <> ECAT_MOTIONSLAVE) then 
+    goto VALID_MOTION_OBJECT
+  end if
+
+  if (IS_MOTION_PDO(index) = 0) then
+    goto VALID_MOTION_OBJECT
+  end if
+
+  IS_VALID_MOTION_OBJECT = 1
+
+  for i = 1 to EC_MAX_PDO_TYPES        
+    if (pdo_map[slaveindex][i]->et_pdo_index = index) then
+      if (pdo_map[slaveindex][i]->et_pdo_subindex = subindex) then
+        goto VALID_MOTION_OBJECT
+      end if
+    end if
+  next
+
+  IS_VALID_MOTION_OBJECT = 0
+
+VALID_MOTION_OBJECT:
+
+end function
+
+'****************************************************************************
+' Function Name: IS_VALID_IO_OBJECT
+' Description: This function finds out whether a PDO is a VALID IO PDO of a certain slave
+' Called From: EC_ASSIGN_PDOS_AUTO
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index
+'                    PDO index
+'                    PDO sub-index
+' Output Parameters: None
+' Return Value: 1 if PDO is a valid IO PDO, 0 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function IS_VALID_IO_OBJECT(byval slaveindex as long, \
+              byval index as long,byval subindex as long) as long
+
+  dim i as long
+
+  IS_VALID_IO_OBJECT = 0
+
+  if (ETSLAVES[slaveindex]->et_slavetype <> ECAT_IOSLAVE) then 
+    goto IS_VALID_IO_OBJECT_OUT
+  end if
+
+  for i = 1 to EC_MAX_PDO_TYPES
+    if (pdo_map[slaveindex][i]->et_pdo_index = index) then
+      if (pdo_map[slaveindex][i]->et_pdo_subindex = subindex) then              
+        IS_VALID_IO_OBJECT = 1
+        i = EC_MAX_PDO_TYPES
+      end if
+    end if
+  next
+
+IS_VALID_IO_OBJECT_OUT:
+
+end function
+
+
+
+
+'****************************************************************************
+' Function Name: GET_PDO_TYPE
+' Description: This function retrieves the type of a certain PDO
+' Called From: EC_ASSIGN_PDOS_AUTO
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index
+'                    PDO index
+'                    PDO sub-index
+' Output Parameters: None
+' Return Value: A long that indicates the type of the PDO, or -1 if the PDO was not found.
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function GET_PDO_TYPE(byval slaveindex as long, \
+              byval index as long,byval subindex as long) as long
+
+  dim i as long
+
+  GET_PDO_TYPE = -1
+
+  for i = 1 to EC_MAX_PDO_TYPES
+    if (pdo_map[slaveindex][i]->et_pdo_index = index) then
+      if (pdo_map[slaveindex][i]->et_pdo_subindex = subindex) then
+        GET_PDO_TYPE = pdo_map[slaveindex][i]->et_type
+        goto OUT_PDO_TYPE
+      end if
+    end if
+  next
+
+OUT_PDO_TYPE:
+
+end function
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_INIT_MOTION_SLAVE
+' Description: Initialize an EtherCAT Slave Drive - Prepare the map of pdos by its default PDO values
+' Called From:
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave index in topology
+'                   BusID
+'                   Address by Alias
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_INIT_MOTION_SLAVE(byval idx as long, byval busid as long, byval byalias as long, byval OPMODE_val as long) 
+
+  call EC_SET_PFB_OBJECT(busid, idx, EC_PFB_INDEX_6064h, EC_PFB_SUBINDEX_00h)
+
+  call EC_SET_DIN_OBJECT(busid, idx, DIGITAL_INPUTS_INDEX_0X60FD, DIGITAL_INPUTS_SUBINDEX_0X0)
+
+  call EC_SET_STATUS_OBJECT(busid, idx, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h)
+
+  call EC_SET_CTRL_OBJECT(busid, idx, EC_CTRL_INDEX_6040h, EC_CTRL_SUBINDEX_00h)
+
+  if OPMODE_val = 7 then
+    call EC_SET_PCMD_OBJECT(busid,idx, 0x60c1, 1) 'for OPMODE 7  instead PCMD 607A  
+  else
+    call EC_SET_PCMD_OBJECT(busid,idx, EC_PCMD_INDEX_607Ah, EC_PCMD_SUBINDEX_00h) '' for OPMODE 8 :
+  end if
+
+
+  if OPMODE_val = 3 then
+    call EC_SET_VCMD_OBJECT(busid, idx, 0x60ff, 0) ' VCMD in Velocity Mode instead VCMD in Synchronous Position Mode 0x6081 :
+  else
+    ' VCMD in Synchronous Position Mode :
+    call EC_SET_VCMD_OBJECT(busid, idx, EC_VCMD_INDEX_6081h, EC_VCMD_SUBINDEX_00h)
+  end if
+
+  call EC_SET_PEXT_OBJECT(busid, idx, EC_PEXT_INDEX_20B6h, EC_PEXT_SUBINDEX_00h)
+
+  call EC_SET_TRQFBK_OBJECT(busid, idx, EC_TRQFBK_INDEX_6078h, EC_TRQFBK_SUBINDEX_00h)
+
+  call EC_SET_TRQCMD_OBJECT(busid, idx, EC_TRQCMD_INDEX_6071h, EC_TRQCMD_SUBINDEX_00h)
+
+  call EC_SET_TRQDMND_OBJECT(busid, idx, EC_TRQDMND_INDEX_6074h, EC_TRQDMND_SUBINDEX_00h)
+
+  call EC_SET_TRQADDCMD_OBJECT(busid, idx, EC_TRQADDCMD_INDEX_60B2h  , EC_TRQADDCMD_SUBINDEX_00h)
+
+  call EC_SET_VADDCMD_OBJECT(busid, idx, EC_VADDCMD_INDEX_60B1h  , EC_VADDCMD_SUBINDEX_00h)
+
+end sub
+
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_INIT_DRIVE_MINIMUM_PDOS
+' Description: Prepare the minimum required PDOS to operate a motion drive
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave index in topology
+'                   BusID
+'                   Address by Alias
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_INIT_DRIVE_MINIMUM_PDOS(byval idx as long, byval busid as long, byval byalias as long) 
+
+  call EC_SET_CTRL_OBJECT(busid, idx, EC_CTRL_INDEX_6040h, EC_CTRL_SUBINDEX_00h)
+  
+  call EC_SET_PCMD_OBJECT(busid,idx, EC_PCMD_INDEX_607Ah, EC_PCMD_SUBINDEX_00h)
+  
+  call EC_SET_STATUS_OBJECT(busid, idx, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h)
+  
+  call EC_SET_PFB_OBJECT(busid, idx, EC_PFB_INDEX_6064h, EC_PFB_SUBINDEX_00h)
+
+  call EC_SET_DIN_OBJECT(busid, idx, DIGITAL_INPUTS_INDEX_0X60FD, DIGITAL_INPUTS_SUBINDEX_0X0)
+
+end sub
+
+
+
+'***************************************************************************************************************
+' Function Name: EC_INSTALL_GENERIC_DRIVE
+' Description: This subroutine is aimed to configure a DS402 generic motion drive. It remaps the drive's PDOs to
+'         the required minimum 4 PDOs and tries to set its PNUM PDEN values.
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'***************************************************************************************************************
+public sub EC_INSTALL_GENERIC_DRIVE(byval drive_addr as long, byval Counts_Per_Revolution as long)
+
+  call EC_INIT_DRIVE_MINIMUM_PDOS(drive_addr, EC_BUSID, EC_ADDRESS_BY_ALIAS)
+  call EC_USE_SLAVE(drive_addr, EC_SLAVES_INFO[drive_addr]->vendor_id, EC_SLAVES_INFO[drive_addr]->product_code, "ECAT_AXIS_SLAVE", TRUE)
+
+  Pos_Units[drive_addr] = Counts_Per_Revolution  '  Counts_Per_Revolution = 10000 - generic value, set in EC_SETUP.PRG
+
+  Try
+    call EC_SDO_WRITE(drive_addr, POS_SHAFT_RES_0x6092, POS_SHAFT_RES_SUBINDEX_0x1, 32, Counts_Per_Revolution)  '  Counts_Per_Revolution = 10000 by default
+    call EC_SDO_WRITE(drive_addr, POS_SHAFT_RES_0x6092, POS_SHAFT_RES_SUBINDEX_0x2, 32, 1)
+  Catch Else
+  
+  End Try
+
+  Try
+    call EC_SDO_WRITE(drive_addr, 0x6091, 1, 32, 1)
+    call EC_SDO_WRITE(drive_addr, 0x6091, 2, 32, 1)
+  Catch Else
+  
+  End Try
+
+  print "Slave ";drive_addr;": feedback resolution is set to ";Counts_Per_Revolution;" counts per revolution"
+
+end sub
+
+
+
+'****************************************************************************
+' Function Name: EC_ETHERCAT_INIT
+' Description: Initialize EtherCAT
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: BusID
+'                   Address By Alias
+' Output Parameters: None
+' Return Value: Number of slaves found
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public Function EC_ETHERCAT_INIT as long
+
+	dim numOfSlaves as long = 0
+	dim counter as long = 0
+	dim retVal as long = 0
+	dim drive_addr as long = 0
+
+	'Check if any motion drive is enabled. If so, throw an exception
+	retVal = EC_IS_ANY_DRIVE_ENABLED
+	if 1 = retVal then
+		throw EC_SLAVE_ENABLED
+	end if
+
+	try
+		call EC_STOPMASTER
+	catch EC_MASTER_ALREADY_CLOSED.num
+		print "Couldn't stop master. MASTER IS ALREADY STOPPED"
+	end try
+
+	sleep 100
+
+	while (numOfSlaves = 0) and (counter < 10)
+		numOfSlaves = EC_Num_Of_Slaves
+		counter = counter + 1
+		sleep 100
+	end while
+
+	if numOfSlaves = 0 then
+		throw EC_MASTER_NO_SLAVES_FOUND
+	end if
+
+	EC_ETHERCAT_INIT = numOfSlaves
+
+	call EC_GET_SLAVES_INFORMATION(numOfSlaves)  '  Populates EC_SLAVES_INFO[64] array
+	call ec_EnumerateSlaves
+	call EC_GET_SLAVES_INFORMATION(numOfSlaves)  '  re-read slave info
+
+	' Make sure all the slaves are in PREOP before starting their configuration procedure
+	if EC_VALIDATE_AL_STATE(EC_STATE_PREOP) <> 0 then
+		throw EC_incorrect_state
+	end if
+
+	call EC_INIT_SLAVES(EC_BUSID)  '  Populates ETSLAVES[64] array
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_MASTER_OPMODE
+' Description: Returns the master's mode of operation
+' Called From: 
+' Author: Raz Ben Yehuda
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Master's operational state according to the following interpretation:
+'                EC_STATE_INIT   - 0x01
+'                EC_STATE_PREOP  - 0x02
+'                EC_STATE_SAFEOP - 0x04
+'                EC_STATE_OP     - 0x08
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_MASTER_OPMODE as long
+
+  dim op as long 
+
+  op = MASTER_OPMODE()
+  EC_MASTER_OPMODE = op
+
+  select case op
+
+    case EC_STATE_INIT
+      print "INIT"      
+    case EC_STATE_PREOP   
+      print "PREOP"
+    case EC_STATE_SAFEOP 
+      print "SAFEOP"
+    case EC_STATE_OP      
+      print "OP"
+    case EC_STATE_INVALID
+      print "INVALID"
+
+  end select
+
+end function
+
+
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_SET_STATE
+' Description: Set slave's operational state
+' Called From: Change_Slave_Ecat_Opmode
+' Author: Raz Ben Yehuda
+' Input Parameters: Slave Address
+'                   Operational State  -  
+'                  EC_STATE_INIT   - 0x01
+'                  EC_STATE_PREOP  - 0x02
+'                  EC_STATE_BOOT   - 0x03
+'                  EC_STATE_SAFEOP - 0x04
+'                  EC_STATE_OP     - 0x08
+' Output Parameters: None
+' Return Value:    0 if successful, -1 otherwise.
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_SET_STATE(byval addr as long, byval stat as long) as long
+
+  if (stat <> EC_STATE_BOOT) and (stat <> EC_STATE_INIT) and (stat <> EC_STATE_PREOP) and (stat <> EC_STATE_SAFEOP) and (stat <> EC_STATE_OP) then
+    EC_SLAVE_SET_STATE = -1
+  else
+    EC_SLAVE_SET_STATE = EC_SET_STATE(addr, stat)
+  end if
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_GET_STATE
+' Description: Get slave's operational state
+' Called From: Change_Slave_Ecat_Opmode
+' Author: Nir Geller
+' Input Parameters: Slave Address
+' Output Parameters: None
+' Return Value:     Operational State  -  
+'                  EC_STATE_INIT   - 0x01
+'                  EC_STATE_PREOP  - 0x02
+'                  EC_STATE_BOOT   - 0x03
+'                  EC_STATE_SAFEOP - 0x04
+'                  EC_STATE_OP     - 0x08
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_GET_STATE(byval addr as long) as long
+
+  dim op as long
+
+  op = EC_GET_SLAVE_STATE(addr)
+  EC_SLAVE_GET_STATE = op
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_GET_ERROR_STRING
+' Description: Returns the error code of the last error occurred in the drive and prints
+'               an informative string to terminal
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value:    Error code
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_GET_ERROR_STRING(ax as generic axis, byval errCode as long) as string
+
+  dim OVER_CURRENT          as long = 0x2214
+  dim MOTOR_FOLDBACK        as long = 0x2310
+  dim DRIVE_FOLDBACK        as long = 0x2311
+  dim CURRENT_SENSORS       as long = 0x2380  'Current sensors offset out-of-range
+  dim MOTOR_PHASE_DIS       as long = 0x2381  'Motor phase disconnection
+  dim OVER_VOLTAGE          as long = 0x3110
+  dim UNDER_VOLTAGE         as long = 0x3120
+  dim REGEN_OVER_CURRENT    as long = 0x3180
+  dim STO                   as long = 0x3181  'STO (safe torque off) is not connected
+  dim BUS_VOLTAGE           as long = 0x3182  'Bus voltage measurement circuit failure
+  dim INTEGRATED_POWER      as long = 0x4080  'Integrated power module (IPM) over-temperature
+  dim CONTROL_BOARD_OVER    as long = 0x4081  'Control board over-temperature
+  dim DRIVE_OVERTEMP        as long = 0x4310  'Drive over-temperature
+  dim MOTOR_OVERTEMP        as long = 0x4310  'Motor over-temperature
+  dim CONTROL_PLUS_15       as long = 0x5111  'Control +15V out-of-range
+  dim CONTROL_MINUS_15      as long = 0x5112  'Control -15V out-of-range
+  dim DRIVE_5V_OUT          as long = 0x5180  'Drive 5V out-of-range
+  dim POWER_EEPROM_FAULT    as long = 0x5530  'Power board EEPROM faults
+  dim CONTROL_EEPROM_FAULT  as long = 0x5581  'Control digital board EEPROM fault
+  dim CAN_SUPPLY_FAULT      as long = 0x5582  'CAN supply fault
+  dim SELF_TEST             as long = 0x5583  'Self test failed
+  dim FPGA                  as long = 0x5584  'FPGA version mismatch
+  dim PARAM_CHKSUM          as long = 0x5585  'Parameter memory checksum failure
+  dim WRITE_FLASH           as long = 0x5586  'Failure writing to flash memory
+  dim WATCHDOG_FAULT        as long = 0x6010  'Watchdog fault
+  dim DRIVE_CONFIGURE       as long = 0x6381  'Drive not configured
+  dim FPGA_CONFIGURE        as long = 0x6581  'FPGA configuration failure
+  dim INDEX_LINE            as long = 0x7111  'Index line break
+  dim VEL_LIM_EXCEED      as long = 0x7114 ' Velocity Limit exceeded
+  dim ACC_DEC_LIMIT         as long = 0x7115 ' Acceleration/Deceleration limit exceeded
+  dim EC_CABLE_DISCONNECTED as long = 0x7116
+  dim FB_INDEX_BREAK        as long = 0x7180  'Secondary encoder (feedback) index break
+  dim FB_LINE_BREAK         as long = 0x7181  'Secondary encoder (feedback) A/B line break
+  dim PULSE_DIRECTION       as long = 0x7182  'Pulse & direction input line break
+  dim FB_ERROR              as long = 0x7380  'Feedback communication error
+  dim NIKON_ENCODER         as long = 0x7381  'Nikon encoder (feedback) operation fault
+  dim TAMAGAWA_FB           as long = 0x7382  'Tamagawa feedback initialization failed
+  dim LINE_BREAK            as long = 0x7383  'A/B Line break
+  dim ILLEAGAL_HALLS        as long = 0x7384  'Illegal Halls
+  dim TAMAGAWA_VOLTAGE      as long = 0x7385  'Tamagawa battery low voltage
+  dim PLL_SYNC_FAILED       as long = 0x7386  'PLL synchronization failed
+  dim CURRENT_LOOP          as long = 0x7780  'Current loop autotuning failed
+  dim MOTOR_SETUP           as long = 0x7781  'Motor setup failed
+  dim PHASE_FIND            as long = 0x7782  'Phase find failed
+  dim ENCODER_SIM           as long = 0x7783  'Encoder simulation frequency too high
+  dim ENDAT_SINE            as long = 0x7784  'EnDat sine (feedback) communication failed
+  dim OUT_OF_RANGE          as long = 0x7785  'A/B out-of-range
+  dim SINE_ENCODER          as long = 0x7786  'Sine encoder quadrature
+  dim SINCOS_CALIB          as long = 0x7787  'Sine/cosine calibration invalid
+  dim ENCODER_OVER_CURR     as long = 0x7788  'Encoder (feedback) 5V over-current
+  dim FB_OVER_CURR          as long = 0x7789  'Secondary encoder (feedback) 5V over-current
+  dim SENSORLESS_INIT       as long = 0x778A  'Sensorless initialization
+  dim RESOLVER_INIT         as long = 0x778B  'Resolver initialization failed
+  dim CAN_HEARTBEAT         as long = 0x8130  'CAN heartbeat lost
+  dim DRIVE_LOCKED          as long = 0x8180  'Drive locked
+  dim VELOCITY_OVERSPEED    as long = 0x8481  'Velocity over-speed exceeded
+  dim MAX_POS_ERR           as long = 0x8611  'Maximum position error exceeded
+
+
+  dim NO_FAULT              as long = 0x00
+
+
+  select case errCode
+
+    case OVER_CURRENT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Over Current"
+    case MOTOR_FOLDBACK
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Motor Foldback"
+    case DRIVE_FOLDBACK
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Drive Foldback"
+    case CURRENT_SENSORS
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Current sensors offset out-of-range"
+    case MOTOR_PHASE_DIS
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Motor phase disconnection"
+    case OVER_VOLTAGE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Over Voltage"
+    case UNDER_VOLTAGE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Under Voltage"
+    case REGEN_OVER_CURRENT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Regen Over Current"
+    case STO
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : STO (safe torque off) is not connected"
+    case BUS_VOLTAGE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Bus voltage measurement circuit failure"
+    case INTEGRATED_POWER
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Integrated power module (IPM) over-temperature"
+    case CONTROL_BOARD_OVER
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Control board over-temperature"
+    case DRIVE_OVERTEMP
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Drive over-temperature"
+    case MOTOR_OVERTEMP
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Motor over-temperature"
+    case CONTROL_PLUS_15
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Control +15V out-of-range"
+    case CONTROL_MINUS_15
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Control -15V out-of-range"
+    case DRIVE_5V_OUT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Drive 5V out-of-range"
+    case POWER_EEPROM_FAULT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Power board EEPROM faults"
+    case CONTROL_EEPROM_FAULT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Control digital board EEPROM fault"
+    case CAN_SUPPLY_FAULT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : CAN supply fault"
+    case SELF_TEST
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Self test failed"
+    case FPGA
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : FPGA version mismatch"
+    case PARAM_CHKSUM
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Parameter memory checksum failure"
+    case WRITE_FLASH
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Failure writing to flash memory"
+    case WATCHDOG_FAULT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Watchdog fault"
+    case DRIVE_CONFIGURE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Drive not configured"
+    case FPGA_CONFIGURE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : FPGA configuration failure"
+    case INDEX_LINE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Index line break"
+    case EC_CABLE_DISCONNECTED
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : EtherCAT cable disconnected"
+    case FB_INDEX_BREAK
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Secondary encoder (feedback) index break"
+    case FB_LINE_BREAK
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Secondary encoder (feedback) A/B line break"
+    case PULSE_DIRECTION
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Pulse & direction input line break"
+    case FB_ERROR
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Feedback communication error"
+    case NIKON_ENCODER
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Nikon encoder (feedback) operation fault"
+    case TAMAGAWA_FB
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Tamagawa feedback initialization failed"
+    case LINE_BREAK
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : A/B Line break"
+    case ILLEAGAL_HALLS
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Illegal Halls"
+    case TAMAGAWA_VOLTAGE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Tamagawa battery low voltage"
+    case PLL_SYNC_FAILED
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : PLL synchronization failed"
+    case CURRENT_LOOP
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Current loop autotuning failed"
+    case MOTOR_SETUP
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Motor setup failed"
+    case PHASE_FIND
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Phase find failed"
+    case ENCODER_SIM
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Encoder simulation frequency too high"
+    case ENDAT_SINE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : EnDat sine (feedback) communication failed"
+    case OUT_OF_RANGE
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : A/B out-of-range"
+    case SINE_ENCODER
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Sine encoder quadrature"
+    case SINCOS_CALIB
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Sine/cosine calibration invalid"
+    case ENCODER_OVER_CURR
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Encoder (feedback) 5V over-current"
+    case FB_OVER_CURR
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Secondary encoder (feedback) 5V over-current"
+    case SENSORLESS_INIT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Sensorless initialization"
+    case RESOLVER_INIT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Resolver initialization failed"
+    case CAN_HEARTBEAT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : CAN heartbeat lost"
+    case DRIVE_LOCKED
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Drive locked"
+    case VELOCITY_OVERSPEED
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Velocity over-speed exceeded"
+    case MAX_POS_ERR
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Maximum position error exceeded"
+    case ACC_DEC_LIMIT
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Acceleration/Deceleration limit exceeded"
+    case VEL_LIM_EXCEED
+      EC_GET_ERROR_STRING = "drive fault in " + ax.ElementName + " : Velocity Limit exceeded"
+    case NO_FAULT
+      EC_GET_ERROR_STRING = "No drive fault in " + ax.ElementName
+    case else
+      EC_GET_ERROR_STRING =  "drive fault number " +str$(errCode) +" in " + ax.ElementName + " : description N/A"
+
+  end select
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_GET_ERROR
+' Description: Returns the error code saved in the drive in case of an internal error
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+' Output Parameters: None
+' Return Value:    Error code
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_GET_ERROR(Ax as generic axis) as string
+
+  dim err as long = 0
+  dim retStr as string = ""
+
+  if EC_SDO_READ(Ax.DAdd, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3 then
+
+    err = EC_SDO_READ(Ax.DAdd, ErrorCode_603Fh, 0)
+    EC_SLAVE_GET_ERROR = EC_GET_ERROR_STRING(ax, err)
+
+  else
+
+    EC_SLAVE_GET_ERROR = "No Error in drive " + Ax.ElementName
+
+  end if
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_CYCLETIME
+' Description: The following subroutine sets EtherCAT cycle time in ALL the slaves
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: None
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: EC_BUS_CYCLETIME
+' Revisions:
+'****************************************************************************
+public sub EC_SET_CYCLETIME
+
+	dim i as long  
+	dim ret as long
+	dim mant as long
+	dim expo as long = -6
+
+	bus[0].cycletime = EC_BUS_CYCLETIME
+	' for shorter cycle times we push sending of frame towards end of cycle
+	if EC_BUS_CYCLETIME <= 1000 then
+		i = EC_SET_NEW_STATIC_DISTANCE(120)
+	end if
+	mant = EC_BUS_CYCLETIME ' in nano
+	while not (mant>=1 and mant <= 200)
+		mant = mant / 10
+		expo = expo + 1
+	end while
+	'   ?mant,expo
+	'   printu "#####.########";mant*10^expo
+
+	for i = 1 to nr_slaves
+
+		if ETSLAVES[i]->et_slavetype = ECAT_MOTIONSLAVE then
+
+			Try
+				call EC_SDO_WRITE(i, Interpolation_Time_Period_60C2h, Interpolation_Time_Period_val_1, 8, mant)
+			catch else
+				print "Cannot set sync time (Interpolation time period value) for slave #";i;". Error number ";ERRORNUMBER
+				print error
+			End Try
+
+			Try
+				call EC_SDO_WRITE(i, Interpolation_Time_Period_60C2h, Interpolation_Time_Period_idx_2, 8, expo)
+			catch else
+				print "EC_SDO_WRITE Failed: Cannot set sync time (Interpolation time index) for slave #";i;". Error number ";ERRORNUMBER
+				print error
+			End Try
+
+		end if
+
+	next
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_SLAVE_HOME_DS402
+' Description: This subroutine is DS 402 protocol conforming 
+'      This subroutine is used to start HOMING procedure in a certain slave drive
+'      **** INVOKE THIS SUBROUTINE ONLY AFTER TASK HAS ATTACHED TO AXIS ****
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+'                    homingTimeout - Maximum time to try homing procedure (Milliseconds)
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+' 
+' statusword value while homing:
+' bit: 13  12  10
+'       0   0   0  -  In progress
+'       0   0   1  -  Homing procedure is interrupted or not started
+'       0   1   0  -  Homing is attained  but target is not reached
+'       0   1   1  -  Homing procedure is completed successfully
+'       1   0   0  -  Homing error occurred , velocity is not 0
+'       1   0   1  -  Homing error occurred ,  velocity is 0
+'       1   1   X  -  reserved
+'****************************************************************************
+public sub EC_SLAVE_HOME_DS402(ax as generic axis, byval homingTimeout as long)
+
+  dim slaveAddr as long
+  dim currModOp as long  ' current drive's mode of operation
+  dim homingNotDone as long = true
+  dim driveEnabled as long ' flag that indicates the state of the drive once sub is invoked
+  ' homing status
+  dim statusWordMask as const long = 2^13 BOR 2^12 BOR 2^10
+  dim inProgress as const long = 0 ' in progress
+  dim intrNotstrt as const long = 2^10  ' procedure is interrupted or not started
+  dim attTarNotRech as const long = 2^12  ' Homing is attained  but target is not reached
+  dim homeOk as const long =  2^12 BOR 2^10  ' homing process is complete
+  dim homeErrMove as const long = 2^13 ' Homing error occurred , velocity is not 0
+  dim homeErrStop as const long = 2^13 BOR 2^10 ' Homing error occurred , velocity is 0
+
+  dim throwEx as long = 0
+
+  dim counter as long = 0  '  a counter used to count 10 iterations of sleep when enabling/disabling axis
+  dim ret as long
+
+  'sanity check over input
+  if homingTimeout < 1 or homingTimeout > 300000 then
+    throw ec_slave_home_err_timeout
+    'goto END_SUB
+  end if
+
+  slaveAddr = ax.dadd
+
+  ' check drive's status: enabled/disabled. Save it (in order to
+  ' return the drive in the same status), and disable axis
+  if ax.en = true then
+    driveEnabled = true
+    ax.en = false
+    counter = 0
+    while true = ax.en AND counter < 10
+      sleep 10
+      counter = counter + 1
+    end while
+    if ax.en = true then
+      throw ec_slave_home_err_disable 'failed to disable axis
+    end if
+  end if
+
+  'get current mode of operation, and save it
+  currModOp = EC_PDO_READ(slaveAddr, Modes_Of_Operation_6060h, 0)
+
+  'set mode of operation = 6 - homing mode
+  call EC_PDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, 6)  
+  sleep 200
+  'make sure changing opmode was successful. if not - throw an exception
+  if EC_PDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0) <> 6 then
+    throw ec_slave_home_err_chgOpMode6 'home_drive_err_chgOpMode6
+  end if
+
+  'enter axis into following mode
+  ax.fmode = 2
+
+  'enable drive
+  ax.en = true
+  counter = 0
+  while false = ax.en AND counter < 10
+    sleep 10
+    counter = counter + 1
+  end while
+  if ax.en = false then
+    call EC_PDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, currModOp)
+    throw ec_slave_home_err_enable 'failed to enable axis
+  end if
+
+  'homing procedure starts automatically
+  'read status word while homing is not done, and no error occurred
+  counter = sys.clock ' sample current system clock (in ticks)
+  while homingNotDone AND (homingTimeout > sys.clock - counter)
+
+    ret = EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, 0) BAND statusWordMask
+
+    Select Case ret
+
+      CASE inProgress
+ '       print "Homing: inProgress"
+        sleep 10
+      Case intrNotstrt
+        'throw ec_slave_home_err_interrupted
+        print "Homing: intrNotstrt"
+        sleep 10
+      Case attTarNotRech
+ '       print "Homing: attTarNotRech"
+        sleep 10
+        'throw ec_slave_home_err_target
+      Case homeOk
+        print "Homing: OK"
+        homingNotDone = false
+      Case homeErrMove
+        print "Homing: homeErrMove"
+        sleep 10
+        throwEx = 1
+        'throw ec_slave_home_err_velnotzero
+      Case homeErrStop
+        print "Homing: homeErrStop"
+        sleep 10
+        throwEx = 2
+        'throw ec_slave_home_err_velzero
+
+    End Select
+
+  end while
+
+ 'disable drive
+  ax.en = false
+  sleep 500
+  counter = 0
+  while (EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 AND counter < 10 '  while true = ax.en AND counter < 10
+    sleep 100
+    counter = counter + 1
+  end while
+  sleep 100
+  if (EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, 0) band 2^2) <> 0 then 'if ax.en = true then
+    throw ec_slave_home_err_disable 'failed to disable axis
+  end if
+
+
+  'set mode of operation to original mode. Bug 100705: If it was in homing, set it to sync position
+  if currModOp = 6 then
+	currModOp = 8
+  end if
+  call EC_PDO_WRITE(slaveAddr, Modes_Of_Operation_6060h, 0, currModOp)
+  
+  sleep 100
+
+  if EC_PDO_READ(slaveAddr, Modes_Of_Operation_Display_6061h, 0) <> currModOp then
+    throw ec_slave_home_err_chgOpMode8
+  end if
+  ax.fmode = 0
+
+  if 1 = throwEx then
+    throw ec_slave_home_err_velnotzero
+  end if
+  if 2 = throwEx then
+    throw ec_slave_home_err_velzero
+  end if
+  if ret = inProgress then
+    throw ec_slave_home_err_timed_out
+  end if
+
+
+  'if drive was enabled when HOME_DRIVE was invoked, enable drive
+  if 0 <> driveEnabled then
+    ax.en = true
+    counter = 0
+    while false = ax.en AND counter < 10
+      sleep 10
+      counter = counter + 1
+    end while
+    if ax.en = false then
+      throw ec_slave_home_err_enable 'failed to enable axis
+    end if
+  end if
+
+
+end sub
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SLAVE_SET_HOMING_PARAMETERS
+' Description: Set homing parameter in a certain slave
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+'                    Parameter Number
+'                    Parameter Value
+' Output Parameters: None
+' Return Value:    None
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_SLAVE_SET_HOMING_PARAMETERS(ax as generic axis, byval paramNum as long, byval paramVal as long)
+
+  dim slaveAddr as long
+  dim ret as long
+
+  slaveAddr = ax.dadd
+
+  Select Case paramNum
+
+    CASE HOMING_METHOD
+      call EC_SDO_WRITE(slaveAddr, Homing_Method_6098h, 0, 8, paramVal) 'set homing method
+      'if 0<> SDO_WRITE(slaveAddr, 0x6098, 0, 8, paramVal) then 'set homing method
+      '   print "Cannot set homing method to ";paramVal
+      'throw error
+      'end if
+
+    CASE HOMING_OFFSET
+      call EC_SDO_WRITE(slaveAddr, Homing_Offset_607Ch, 0, 32, paramVal)  'set homing offset
+      'if 0<> SDO_WRITE(slaveAddr, 0x607C, 0, 32, paramVal) then 'set homing offset
+      '   print "Cannot set homing offset to ";paramVal
+      'throw error
+      'end if
+
+    CASE FAST_HOMING_SPEED
+      call EC_SDO_WRITE(slaveAddr, Homing_Speed_6099h, Homing_Speed_Fast_1, 32, paramVal)  'set fast homing speed
+      'if 0<> SDO_WRITE(slaveAddr, Homing_Speed_6099h, 1, 32, paramVal) then 'set fast homing speed
+      '   print "Cannot set fast homing speed to ";paramVal
+      'throw error
+      'end if
+
+    CASE SLOW_HOMING_SPEED
+      call EC_SDO_WRITE(slaveAddr, Homing_Speed_6099h, Homing_Speed_Slow_2, 32, paramVal)  'set slow homing speed
+      'if 0<> SDO_WRITE(slaveAddr, 0x6099, 2, 32, paramVal) then 'set slow homing speed
+      '   print "Cannot set slow homing speed to ";paramVal
+      'throw error
+      'end if
+
+    CASE HOMING_ACCELERATION
+      call EC_SDO_WRITE(slaveAddr, Homing_Acc_Dec_609Ah, 0, 32, paramVal)  'set homing acceleration/deceleration
+      'if 0<> SDO_WRITE(slaveAddr, 0x609A, 0, 32, paramVal) then 'set homing acceleration/deceleration
+      'print "Cannot set homing acceleration/deceleration to ";paramVal
+      'throw error
+      'end if
+
+    CASE ELSE
+      throw homing_parameters_err_badpar
+      
+  End Select
+
+end sub
+
+
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_GET_HOMING_PARAMETERS
+' Description: Get homing parameter from a certain slave
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Axis
+'                    Parameter Number
+' Output Parameters: None
+' Return Value:    Requested axis' homing parameter value
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_GET_HOMING_PARAMETERS(ax as generic axis, byval paramNum as long) as long
+
+  dim slaveAddr as long
+
+  slaveAddr = ax.dadd
+
+  Select Case paramNum
+
+    CASE HOMING_METHOD
+      EC_SLAVE_GET_HOMING_PARAMETERS = EC_SDO_READ(slaveAddr, Homing_Method_6098h, 0) 'get homing method
+
+    CASE HOMING_OFFSET
+      EC_SLAVE_GET_HOMING_PARAMETERS = EC_SDO_READ(slaveAddr, Homing_Offset_607Ch, 0) 'get homing offset
+
+    CASE FAST_HOMING_SPEED
+      EC_SLAVE_GET_HOMING_PARAMETERS = EC_SDO_READ(slaveAddr, Homing_Speed_6099h, Homing_Speed_Fast_1) 'get fast homing speed
+
+    CASE SLOW_HOMING_SPEED
+      EC_SLAVE_GET_HOMING_PARAMETERS = EC_SDO_READ(slaveAddr, Homing_Speed_6099h, Homing_Speed_Slow_2) 'get slow homing speed
+
+    CASE HOMING_ACCELERATION
+      EC_SLAVE_GET_HOMING_PARAMETERS = EC_SDO_READ(slaveAddr, Homing_Acc_Dec_609Ah, 0) 'get homing acceleration/deceleration
+
+    CASE ELSE
+      throw homing_parameters_err_badpar
+      ' instead of THROW
+      'EC_SLAVE_GET_HOMING_PARAMETERS = some error number
+
+  End Select
+
+end function
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_ASSOCIATE_PDO_TO_SYS_DIO
+' Description: Associate a SYSTEM Digital IO with a slave specific PDOe that toggles DIOs
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave Address
+'                   PDO index
+'                   PDO sub-index
+'                   System Digital IO bit number
+'          Range
+'          Inherent offset inside PDOe to first bit of DIO
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_ASSOCIATE_PDO_TO_SYS_DIO(byval slaveAddr as long, byval PDOindex as long, byval PDOsubindex as long, byval systemDIOnumber as long, byval range as long, byval inherent_offset as long)
+
+  dim curr_num_of_pdoe as long
+  dim i as long
+
+  ' sanity check over IO bit number
+  if 1 > systemDIOnumber then
+    throw ec_iomodule_err_inputnumber
+  end if
+
+  i = EC_FIND_SLAVE(EC_BUSID, slaveAddr)
+  'Map given index and sub index to input/output number
+
+  ETSLAVES[slaveAddr]->et_nr_pdo_entries = ETSLAVES[slaveAddr]->et_nr_pdo_entries + 1
+  curr_num_of_pdoe = ETSLAVES[slaveAddr]->et_nr_pdo_entries
+
+  pdo_map[i][curr_num_of_pdoe]->et_pdo_index    = PDOindex
+  pdo_map[i][curr_num_of_pdoe]->et_pdo_subindex = PDOsubindex
+  pdo_map[i][curr_num_of_pdoe]->et_iobit = systemDIOnumber
+  pdo_map[i][curr_num_of_pdoe]->et_io_range = range
+  pdo_map[i][curr_num_of_pdoe]->et_inherent_offset = inherent_offset
+  pdo_map[i][curr_num_of_pdoe]->et_io_hw_assistance = 0
+  pdo_map[i][curr_num_of_pdoe]->et_type = EC_PDO_DIN
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_ASSOCIATE_PDO_TO_SYS_DIO_HWA
+' Description: Associate a SYSTEM Digital IO with a slave specific PDOe that toggles DIOs
+' Called From: 
+' Author: Nir Geller 
+' Input Parameters: Slave Address
+'                   PDO index
+'                   PDO sub-index
+'                   System Digital IO bit number
+'                   Range
+'                   Inherent offset inside PDOe to first bit of DIO
+'                   hwa_type - hw assitance type:
+'                   0 - no hw/assistance
+'                   1 - Backhoff  EL2258 - timestamping outputs
+'                   2 - CDHD2, events     
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+public sub EC_ASSOCIATE_PDO_TO_SYS_DIO_HWA(byval slaveAddr as long, byval PDOindex as long, byval PDOsubindex as long, byval systemDIOnumber as long, byval range as long, byval inherent_offset as long, byval hwa_type as long)
+
+  dim curr_num_of_pdoe as long
+  dim i as long
+
+  ' sanity check over IO bit number
+  if 1 > systemDIOnumber then
+    throw ec_iomodule_err_inputnumber
+  end if
+
+  i = EC_FIND_SLAVE(EC_BUSID, slaveAddr)
+  'Map given index and sub index to input/output number
+
+  ETSLAVES[slaveAddr]->et_nr_pdo_entries = ETSLAVES[slaveAddr]->et_nr_pdo_entries + 1
+  curr_num_of_pdoe = ETSLAVES[slaveAddr]->et_nr_pdo_entries
+
+  pdo_map[i][curr_num_of_pdoe]->et_pdo_index    = PDOindex
+  pdo_map[i][curr_num_of_pdoe]->et_pdo_subindex = PDOsubindex
+  pdo_map[i][curr_num_of_pdoe]->et_iobit = systemDIOnumber
+  pdo_map[i][curr_num_of_pdoe]->et_io_range = range
+  pdo_map[i][curr_num_of_pdoe]->et_inherent_offset = inherent_offset
+  pdo_map[i][curr_num_of_pdoe]->et_io_hw_assistance = hwa_type
+  
+end sub
+
+
+'****************************************************************************
+' Function Name: GET_IO_DATA
+' Description: This function retrieves the IO bit of an IO module PDO
+' Called From: EC_ASSIGN_PDOS_AUTO
+' Author: Nir Geller
+' Input Parameters: Slave index
+'                    PDO index
+'                    PDO sub-index
+' Output Parameters: firstSysIO, range
+' Return Value: A long that indicates the type of the PDO, or -1 if the PDO was not found.
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+function GET_IO_DATA(byval slaveindex as long, byval index as long, byval subindex as long, firstSysIO as long, range as long, offset as long, pdo_io_hwassist as long) as long
+
+  dim i as long
+
+  GET_IO_DATA = -1
+
+  if TRUE = ethercat_lib_debug_flag then
+  print "slave index ";slaveindex
+  end if
+
+  for i = 1 to EC_MAX_PDO_TYPES
+    if (pdo_map[slaveindex][i]->et_pdo_index = index) then
+      if (pdo_map[slaveindex][i]->et_pdo_subindex = subindex) then
+        firstSysIO = pdo_map[slaveindex][i]->et_iobit
+        range = pdo_map[slaveindex][i]->et_io_range
+        offset = pdo_map[slaveindex][i]->et_inherent_offset
+        pdo_io_hwassist = pdo_map[slaveindex][i]->et_io_hw_assistance
+        GET_IO_DATA = 0
+        goto OUT_PDO_BIT
+      end if
+    end if
+  next
+
+OUT_PDO_BIT:
+
+end function
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_CLEAR_FAULTS
+' Description: This subroutine attempts to clear faults that exist in a drive
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Slave Address
+' Output Parameters: None
+' Return Value:Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_CLEAR_FAULTS(byval slaveAddr as long)
+
+  dim counter as long = 0
+  dim i as long = 0
+
+  while ((EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3) <> 0) and (i < 3)
+
+    call EC_PDO_WRITE(slaveAddr, ControlWord_6040h, 0, 128)
+
+    sleep 10
+
+    while ((EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3) <> 0) and (counter < 10)
+      sleep 1
+      counter = counter + 1
+    end while
+
+    call EC_PDO_WRITE(slaveAddr, ControlWord_6040h, 0, 0)
+
+    sleep 1000
+    i = i + 1
+
+  end while
+
+  if (EC_PDO_READ(slaveAddr, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3) <> 0 then
+
+    throw EC_SLAVE_CANT_CLEAR_FLT
+
+  end if
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: EC_CLEAR_FAULTS_FUNC
+' Description: This subroutine clears faults that exist in a drive
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Slave Address
+' Output Parameters: None
+' Return Value:Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_CLEAR_FAULTS_FUNC(ax as generic axis) as long
+
+  dim counter as long = 0
+  dim i as long = 0
+
+  EC_CLEAR_FAULTS_FUNC = 0
+    
+  while ((EC_PDO_READ(ax.Dadd, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3) <> 0) and (i < 3)
+
+    call EC_PDO_WRITE(ax.Dadd, ControlWord_6040h, 0, 128)
+
+    sleep 10
+
+    while ((EC_PDO_READ(ax.Dadd, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3) <> 0) and (counter < 10)
+      sleep 1
+      counter = counter + 1
+    end while
+
+    call EC_PDO_WRITE(ax.Dadd, ControlWord_6040h, 0, 0)
+
+    sleep 1000
+    i = i + 1
+
+  end while
+
+  if (EC_PDO_READ(ax.Dadd, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) band 2^3) <> 0 then
+
+    EC_CLEAR_FAULTS_FUNC = -1
+
+  end if
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_IS_ANY_DRIVE_ENABLED
+' Description: This function returns TRUE if ANY motion drive is enabled
+' Called From: EC_ETHERCAT_INIT
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: TRUE if any motion drive is enabled, FALSE otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_IS_ANY_DRIVE_ENABLED as long
+
+  dim numOfSlaves as long
+  dim ret as long
+  dim i as long
+
+  numOfSlaves = EC_Num_Of_Slaves
+  EC_IS_ANY_DRIVE_ENABLED = 0
+
+  for i = 1 to numOfSlaves
+
+    ' EC_PDO_READ is encapsulated in a try...catch because reading status word of an IO modules will throw an exception
+    Try
+      if EC_PDO_READ(i, EC_STATUS_INDEX_6041h, EC_STATUS_SUBINDEX_00h) BAND 2^2 then
+
+        EC_IS_ANY_DRIVE_ENABLED = 1
+
+      end if
+
+    catch else
+      'Slave is not a motion drive
+      'Do nothing
+    End Try
+
+  next
+
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_DISABLE_DRIVE
+' Description: This subroutine disable the drive.
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Generic Axis
+' Output Parameters: None
+' Return Value:Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_DISABLE_DRIVE(byval slaveAddr as long)
+
+  dim ret as long
+
+  ret = ec_sdo_read(slaveAddr, 0x6040, 0)
+  ret = ret band 0xFFFB
+  call ec_sdo_write(slaveAddr, 0x6040, 0, 16, ret)
+
+end sub
+
+
+
+'****************************************************************************
+' Function Name: EC_Enable_Disable_Axis
+' Description: Enable or disable a drive
+' Called From:
+' Author: Nir Geller
+' Input Parameters: generic axis
+'                    Enable/Disable flag
+' Output Parameters: None
+' Return Value: 0 on success, -1 if failed
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_Enable_Disable_Axis(ax as generic axis, byval EnDes as long) as long
+
+  dim counter as long = 0
+
+  EC_Enable_Disable_Axis = 0
+
+  ax.en = EnDes
+  counter = 0
+
+  while (EnDes <> ax.en) and (counter < 10)
+    sleep 1
+    counter = counter + 1
+  end while
+
+  if ax.en <> EnDes then
+
+    EC_Enable_Disable_Axis = -1
+
+  end if
+
+end function
+
+
+'****************************************************************************
+' Function Name: CHECK_TOPOLOGY
+' Description: This subroutine checks topology correctness 
+' Called From:
+' Author: Nir Geller
+' Input Parameters:  none
+' Output Parameters: slave_num  -  In case of an error, slave_num is populated with suspicious faulty slave number - (not reliable)
+'                  If no error is detected - Returns the number of slaves found
+' Return Value: 0 if no error is detected, or general error.
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function CHECK_TOPOLOGY as long
+
+	dim Attempts as long = 50
+	dim retVal as long
+	dim i as long = 0
+	dim slave_num as long
+
+	CHECK_TOPOLOGY = 0
+
+	retVal = EC_CHECK_TOPOLOGY(slave_num)
+
+	while i < Attempts and retVal = -20521
+		sleep 100
+		retVal = EC_CHECK_TOPOLOGY(slave_num)
+		i = i + 1
+	end while
+
+	Select Case retVal
+
+		Case -20521
+
+			print "Master is still scanning the bus for slaves,"
+			printu "after # attempts to check the topology";Attempts
+			call ec_handle_error(retVal)
+
+
+		Case -20583
+
+			print "CHECK_TOPOLOGY(): Suspected miswiring. Check input/output EtherCAT connectors"
+			call ec_handle_error(retVal)
+
+
+		Case is < 0
+
+			call ec_handle_error(retVal)
+
+
+		Case Else
+
+			printu "EtherCAT Topology OK. Found # slaves";retVal
+
+	End Select
+
+	CHECK_TOPOLOGY = retVal
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_IS_PDO
+' Description: This function checks the existence of a PDO
+' Called From:
+' Author: Raz Ben Yehuda
+' Input Parameters:  none
+' Output Parameters: TRUE if PDO exists, 0 otherwise.
+' Return Value:Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_IS_PDO(byval slaveAddr as long,byval index as long,byval subindex as long) as long
+
+  dim ret as long
+
+  ret = EC_FIND_PDO(slaveAddr, index,subindex)
+  EC_IS_PDO = ret
+
+end function
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_Slave_NMT_StateSet
+' Description: This subroutine attempts to set an EtherCAT slave to a certain Ecat opmode
+' Called From: EC_SETUP.PRG
+' Author: Nir Geller
+' Input Parameters: slave address
+'          new state -
+'                  EC_STATE_INIT   - 0x01
+'                  EC_STATE_PREOP  - 0x02
+'                  EC_STATE_BOOT   - 0x03
+'                  EC_STATE_SAFEOP - 0x04
+'                  EC_STATE_OP     - 0x08
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_Slave_NMT_StateSet(byval slaveaddr as long, byval new_state as long)
+
+  dim counter as long = 0
+  dim retVal as long = -1
+  dim opmodeSleep as  const long = 10
+  dim opmodeTimout as const long = 5000 / opmodeSleep
+
+  
+  if (new_state <> EC_STATE_BOOT) and (new_state <> EC_STATE_INIT) and (new_state <> EC_STATE_PREOP) and (new_state <> EC_STATE_SAFEOP) and (new_state <> EC_STATE_OP) then
+    throw ec_slave_invalid_opmode
+  else
+  
+    if EC_SLAVE_SET_STATE(slaveaddr, new_state) = -1 then
+      throw ec_slave_failed_change_opmode
+    end if
+    
+    while (retVal <> new_state) and (counter < opmodeTimout)
+
+      counter = counter + 1
+      sleep opmodeSleep
+    
+      retVal = EC_SLAVE_GET_STATE(slaveaddr)
+      
+    end while
+
+  end if
+
+  retVal = EC_SLAVE_GET_STATE(slaveaddr)
+  if retVal <> new_state then
+    throw ec_slave_failed_change_opmode
+  end if
+
+end sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_CREATE_MASTER
+' Description: This subroutine create the master and domain
+' Called From: EC_SETUP.PRG
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_CREATE_MASTER
+
+  dim retVal as long = 0
+
+  retVal = EC_INIT(EC_ADDRESS_BY_ALIAS)
+  call ec_handle_error(retVal)
+
+end sub
+
+
+
+
+'****************************************************************************
+' Function Name: EC_Num_Of_Slaves
+' Description: This Function returns the number of slaves found by the ec_master
+' Called From: EC_SETUP.PRG
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Number of slaves
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_Num_Of_Slaves as long
+
+  dim Attempts as long = 50
+  dim retVal as long = 0
+  dim i as long = 0
+
+  EC_Num_Of_Slaves = 0
+
+  retVal = EC_NRSLAVES()
+
+  while i < Attempts and retVal = -20521
+    sleep 100
+    retVal = EC_NRSLAVES()
+    i = i + 1
+  end while
+
+  if -20521 = retVal then
+    print "Master is still scanning the bus for slaves,"
+    print "after # attempts to query number of slaves";Attempts
+    throw EC_MASTER_CURRENTLY_SCANNING
+  end if
+
+  EC_Num_Of_Slaves = retVal
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_GET_CALIB_CMA
+' Description: This Function returns the number of calibration CMA
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Number of calibration CMA
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_CALIB_CMA as long
+
+  EC_GET_CALIB_CMA = EC_CALIB_CMA()
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_GET_STATIC_DISTANCE
+' Description: This Function returns the static distance
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: static distance
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_STATIC_DISTANCE as long
+
+  EC_GET_STATIC_DISTANCE = EC_STATIC_DISTANCE()
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_SET_NEW_STATIC_DISTANCE
+' Description: This Function sets a new static distance
+' Called From:
+' Author: Nir Geller
+' Input Parameters: static distance as long
+' Output Parameters: None
+' Return Value: 0
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_SET_NEW_STATIC_DISTANCE(byval stat_Dist as long) as long
+
+  EC_SET_NEW_STATIC_DISTANCE = EC_SET_STATIC_DISTANCE(stat_Dist)
+
+end Function
+
+
+'****************************************************************************
+' Function Name: EC_GET_SYNC_STATS
+' Description: This Function returns the sync stats from timer driver
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: sync stats
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_SYNC_STATS as long
+
+  EC_GET_SYNC_STATS = EC_PKTS()
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_GET_TX_DROPPED_PKTS
+' Description: This Function returns the number of Tx process data packets that
+'        were dropped because MC failed to refresh the data
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Number of Tx dropped packets
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_TX_DROPPED_PKTS as long
+
+  EC_GET_TX_DROPPED_PKTS = EC_TX_PKTS_DROPPED()
+
+end Function
+
+'****************************************************************************
+' Function Name: EC_GET_MASTER_TIMEOUTS_NUM
+' Description: This Function returns the number of master time outs
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Number of master time outs
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_MASTER_TIMEOUTS_NUM as long
+
+  EC_GET_MASTER_TIMEOUTS_NUM = EC_PKT_TIMEOUTS()
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_GET_CORRUPTED_FRAMES_NUM
+' Description: This Function returns the number of corrupted frames
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Number of corrupted frames
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_CORRUPTED_FRAMES_NUM as long
+
+  EC_GET_CORRUPTED_FRAMES_NUM = EC_PKT_CORRUPTED()
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_GET_UNMATCHED_PKTS_NUM
+' Description: This Function returns the number of unmatched packets
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: Number of corrupted frames
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_GET_UNMATCHED_PKTS_NUM as long
+
+  EC_GET_UNMATCHED_PKTS_NUM = EC_PKT_UNMATCHED()
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_RESCAN_SLAVES
+' Description: This Function makes the ec_master rescan for slaves
+' Called From:
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: 0 if successful, or -20002 if failed
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_RESCAN_SLAVES as long
+
+  EC_RESCAN_SLAVES = EC_RESCAN()
+
+end Function
+
+
+
+
+'****************************************************************************
+' Function Name: EC_SET_TICKS_UPDATE
+' Description: This Function determines the number of ticks per update to a certain field bus
+' Called From:
+' Author: Nir Geller
+' Input Parameters: bus id, ticks per update
+' Output Parameters: None
+' Return Value: 0 if successful, -20050 if an error occurred in timer update
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_SET_TICKS_UPDATE(byval busid as long, byval ticks as long) as long
+
+  EC_SET_TICKS_UPDATE = EC_TICKS_UPDATE(busid, ticks)
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_GET_DC_DRIFT
+' Description: This Function returns the DC drift in a certain slave
+' Called From:
+' Author: Nir Geller
+' Input Parameters: slave address
+' Output Parameters: None
+' Return Value: drift in nanosecs if successful, -1 if failed
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_SLAVE_GET_DC_DRIFT(byval slaveaddr as long) as long
+
+  EC_SLAVE_GET_DC_DRIFT = EC_READ_DC_DRIFT(slaveaddr)
+
+end Function
+
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_READ_REGISTER
+' Description: This Function reads a register of a certain slave
+' Called From:
+' Author: Nir Geller
+' Input Parameters: slave address, register address, size of register
+' Output Parameters: None
+' Return Value: Value of the register
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_SLAVE_READ_REGISTER(byval slaveaddr as long, byval reg as long, byval reg_size as long) as long
+
+	dim retVal as long = 0
+	dim retErr as long = 0
+
+	retErr = EC_REG_READ(slaveaddr, reg, reg_size, retVal)
+	ec_handle_error(retErr)
+	EC_SLAVE_READ_REGISTER = retVal
+
+end Function
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_WRITE_REGISTER
+' Description: This Function write to a register of a certain slave
+' Called From:
+' Author: Nir Geller
+' Input Parameters: slave address, register address, size of register, value to be written
+' Output Parameters: None
+' Return Value: 0 if successful, -1 if failed
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_SLAVE_WRITE_REGISTER(byval slaveaddr as long, byval reg as long, byval reg_size as long, byval new_val as long) as long
+
+	EC_SLAVE_WRITE_REGISTER = EC_REG_WRITE(slaveaddr, reg, reg_size, new_val)
+	ec_handle_error(EC_SLAVE_WRITE_REGISTER)
+
+end Function
+
+
+'****************************************************************************
+' Function Name: EC_SET_CONS_TX_ERR
+' Description: This Function simulates a number of consecutive TX errors
+' Called From:
+' Author: Nir Geller
+' Input Parameters: slave address
+' Output Parameters: None
+' Return Value: 0 if successful, -20002 if failed
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public Function EC_SET_CONS_TX_ERR(byval numOfErrs as long) as long
+
+  EC_SET_CONS_TX_ERR = EC_SET_TX_ERR(numOfErrs)
+
+end Function
+
+
+'****************************************************************************
+' Subroutine Name: EC_GET_SLAVES_INFORMATION
+' Description: Retrieve from ECat master basic info about the found slaves
+'         According to this info EC_SETUP will configure the slaves
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Number of slaves
+' Output Parameters: Populates EC_SLAVES_INFO[64] array
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+Public Sub EC_GET_SLAVES_INFORMATION(byval numOfSlaves as long)
+
+  dim data[384] as long  '  size is maximum number of slaves * 6 fields in EC_SLAVE_INFO structure
+  dim retVal as long = 0  
+  dim slave_pos as long = 0
+  dim i as long = 1
+
+  if (numOfSlaves < 1) or (numOfSlaves > 64) then
+    'throw
+  end if
+
+  retVal = EC_GET_SLAVES_INFO(data)
+  call ec_handle_error(retVal)
+
+  for slave_pos = 1 to numOfSlaves
+
+    EC_SLAVES_INFO[slave_pos]->position = data[i]
+    EC_SLAVES_INFO[slave_pos]->vendor_id = data[i + 1]
+    EC_SLAVES_INFO[slave_pos]->product_code = data[i + 2]
+    EC_SLAVES_INFO[slave_pos]->revision_number = data[i + 3]
+    EC_SLAVES_INFO[slave_pos]->serial_number = data[i + 4]
+    EC_SLAVES_INFO[slave_pos]->alias = data[i + 5]
+    i = i + 6
+
+  next
+
+end Sub
+
+
+
+
+'****************************************************************************
+' Function Name: EC_REMAP_MINIMUM_PDOS
+' Description: THIS FUNCTION MAPS THE MINIMUM REQUIRED PDOS OF A DRIVE
+'        - CONTROL WORD
+'        - STATUS WORD
+'        - PCMD
+'        - PFB
+'        - Digital Inputs
+' Called From:
+' Author: Nir Geller
+' Input Parameters: Slave address
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+Public Sub EC_REMAP_MINIMUM_PDOS(byval drive_addr as long)
+
+  dim retVal as long = 0
+
+  '********************************************************************
+  '             Set Rx PDOs
+  '********************************************************************
+
+  ' Zero number of entries in sync manager 2
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 0, 8, 0)
+
+  ' Set Rx PDO Entries object
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 1, 16, 0x1600)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C12, 0, 8, 1)
+
+
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 0, 8, 0)
+
+  ' Set ControlWord
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 1, 32, 0x60400010)
+
+  ' Set Position Command
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 2, 32, 0x607A0020)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_RxPDO_1600, 0, 8, 2)
+
+  ' ADD HERE ADDITIONAL PDOS TO OBJECTS 1600-3
+  ' **
+  ' **
+  ' **
+
+
+
+  '********************************************************************
+  '             Set Tx PDOs
+  '********************************************************************
+
+  ' Zero number of entries in sync manager 3
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 0, 8, 0)
+
+  ' Set Tx PDO Entries object
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 1, 16, 0x1A00)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_SYNC_MANAGER_1C13, 0, 8, 1)
+
+
+  ' Zero number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 0, 8, 0)
+
+  ' Set StatusWord
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 1, 32, 0x60410010)
+
+  ' Set Position Feedback
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 2, 32, 0x60640020)
+
+  ' Set Digital Inputs
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 3, 32, 0x60FD0020)
+
+  ' Set number of entries
+  call EC_SDO_WRITE(drive_addr, EC_TxPDO_1A00, 0, 8, 3)
+
+  ' ADD HERE ADDITIONAL PDOS TO OBJECTS 1A00-3
+  ' **
+  ' **
+  ' **
+  
+  'retVal = EC_RESCAN_SLAVES
+
+End Sub
+
+
+
+
+'****************************************************************************
+' Subroutine Name: EC_SET_MOTION_OPMODE
+' Description: Set axis and drive motion operational mode
+' Called From: User application
+' Author: Nir Geller
+' Input Parameters: Axis, new opmode
+' Output Parameters: None
+' Return Value: None
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+Public Sub EC_SET_MOTION_OPMODE(Ax as generic axis, byval new_opmode as long)
+
+  dim drive_opmode as long = 0
+  dim counter as long = 0
+  dim retVal as long = -1
+  dim sOpmodeString as string
+
+  if Ax.IsMoving <> 0 then
+    throw EC_OPMODE_CHANGE_AX_MOVING
+  end if
+
+  if (new_opmode <> PositionMode) and (new_opmode <> VelocityMode) and (new_opmode <> TorqueMode) then
+    ' invalid opmode
+    throw EC_OPMODE_CHANGE_FAILED
+  else
+
+    Select Case new_opmode
+
+      Case PositionMode
+        drive_opmode = 8
+
+      Case VelocityMode
+        drive_opmode = 8  '  Supposed to be 3. Not implemented yet in CDHD
+
+      Case TorqueMode
+        drive_opmode = 10
+
+    End Select
+
+    Ax.en=0
+    while Ax.en=1
+      sleep 200
+    end while
+
+    if Ax.Simulated = 0 then
+
+      if EC_IS_PDO(Ax.dadd, 0x6060, 0) then
+        call EC_PDO_WRITE(Ax.dadd, Modes_Of_Operation_6060h, 0, drive_opmode)
+      else
+        call EC_SDO_WRITE(Ax.dadd, Modes_Of_Operation_6060h, 0, 8, drive_opmode)
+      end if
+
+      sleep 10
+
+      'make sure changing opmode was successful. if not - throw an exception
+      while (retVal <> drive_opmode) and (counter < 10)
+        
+        if EC_IS_PDO(Ax.dadd, Modes_Of_Operation_Display_6061h, 0) then
+          retVal = EC_PDO_READ(Ax.dadd, Modes_Of_Operation_Display_6061h, 0)
+        else
+          retVal = EC_SDO_READ(Ax.dadd, Modes_Of_Operation_Display_6061h, 0)
+        end if
+        
+        counter = counter + 1
+        sleep 10
+        
+      end while
+      
+      if retVal <> drive_opmode then
+        printu "Axis #: Failed changing drive's Opmode";Ax.elementName
+        throw EC_OPMODE_CHANGE_FAILED
+      end if
+
+    end if
+
+    ax.opmode = new_opmode
+
+    if new_opmode = TorqueMode then
+      ax.sumTorque = ON
+    end if
+
+    select case Ax.opmode
+      case TORQUEMODE
+        sOpmodeString = "TORQUEMODE"
+      case VELOCITYMODE
+        sOpmodeString = "VELOCITYMODE"
+      case POSITIONMODE
+        sOpmodeString = "POSITIONMODE"
+      case else
+        sOpmodeString = "invalid opmode"
+    end select
+    printu "Axis # : ax.opmode # - #" ; Ax.elementName ,Ax.opmode, sOpmodeString
+
+  end if
+
+end sub
+
+
+'****************************************************************************
+' Subroutine Name:  EC_SLAVE_SET_PE_MAX
+' Description:  Set maximum allowed following error window
+' Called From:  AX_SETUP.PRG
+' Author:  Eran Korkidi
+' Input Parameters:  Axis
+'          Parameter Value
+' Output Parameters:  None
+' Return Value:  None
+' Algorithm:
+' Global Variables Used: None
+' Revisions:  19.Aug.2014 - 0.0.1
+'****************************************************************************
+public sub EC_SLAVE_SET_PE_MAX(Ax as generic axis, byval paramVal as long)
+
+  call ec_sdo_write(Ax.Dadd, 0x6065, 0, 32, paramVal) ' for monitoring PE --> ? ec_sdo_read(1,0x60F4,0)
+
+end sub
+
+
+'****************************************************************************
+' function Name:  EC_SLAVE_GET_PE_MAX
+' Description:  Get maximum allowed following error window
+' Called From:  
+' Author:  Eran Korkidi
+' Input Parameters:  Axis
+'          
+' Output Parameters:  None
+' Return Value:  PEmax of the drive in counts
+' Algorithm:
+' Global Variables Used: None
+' Revisions:  19.Aug.2014 - 0.0.1
+'****************************************************************************
+public function EC_SLAVE_GET_PE_MAX(Ax as generic axis) as long
+
+  dim bDummy as long
+  bDummy =  ec_sdo_read(Ax.Dadd, 0x6065, 0)
+  EC_SLAVE_GET_PE_MAX = bDummy
+
+end function
+
+
+'****************************************************************************
+' Subroutine Name:  EC_SLAVE_SET_VLIM
+' Description:  Set maximum allowed velocity in drive units
+' Called From:  AX_SETUP.PRG
+' Author:  Eran Korkidi
+' Input Parameters:  Axis
+'          Parameter Value
+' Output Parameters:  None
+' Return Value:  None
+' Algorithm:
+' Global Variables Used: None
+' Revisions:  19.Aug.2014 - 0.0.1
+'****************************************************************************
+public sub EC_SLAVE_SET_VLIM(Ax as generic axis, byval paramVal as long)
+
+  call ec_sdo_write(Ax.Dadd, 0x607F ,0 , 32, paramVal)
+
+end sub
+
+
+'****************************************************************************
+' function Name:  EC_SLAVE_GET_VLIM
+' Description:  Set maximum allowed velocity in drive units
+' Called From:  AX_SETUP.PRG
+' Author:  Eran Korkidi
+' Input Parameters:  Axis
+'          
+' Output Parameters:  None
+' Return Value:  velocity limit (Vlim) drive in counts
+' Algorithm:
+' Global Variables Used: None
+' Revisions:  19.Aug.2014 - 0.0.1
+'****************************************************************************
+public function EC_SLAVE_GET_VLIM(Ax as generic axis) as long
+
+  dim bDummy as long
+  bDummy =  ec_sdo_read(Ax.Dadd, 0x607F, 0)
+  EC_SLAVE_GET_VLIM = bDummy
+
+end function
+
+
+'****************************************************************************
+' function Name:  EC_GET_BUS_CYCLETIME
+' Description:  Get EtherCAT bus cycle time in micro seconds
+' Called From:  User App
+' Author:  Nir Geller
+' Input Parameters:  None
+' Output Parameters: None
+' Return Value:  EC_BUS_CYCLETIME [usec]
+' Algorithm:
+' Global Variables Used: None
+'****************************************************************************
+public function EC_GET_BUS_CYCLETIME as long
+
+  EC_GET_BUS_CYCLETIME = EC_BUS_CYCLETIME
+
+end function
+
+
+'****************************************************************************
+' subroutine Name:  EC_SET_BUS_CYCLETIME
+' Description:  Set EtherCAT bus cycle time in micro seconds
+' Called From:  User App
+' Author:  Nir Geller
+' Input Parameters:  New Ethercat cycle time
+' Output Parameters: None
+' Return Value:
+' Algorithm:
+' Global Variables Used: None
+'****************************************************************************
+public sub EC_SET_BUS_CYCLETIME(byval user_ctime as long)
+
+  if user_ctime <> 16000 and user_ctime <> 8000 and user_ctime <> 4000 AND user_ctime <> 2000 AND user_ctime <> 1000 AND user_ctime <> 500 AND user_ctime <> 250 AND user_ctime <> 125 then
+    throw EC_BAD_CYCLETIME
+  end if
+
+  EC_BUS_CYCLETIME = user_ctime
+
+end sub
+
+
+'****************************************************************************
+' subroutine Name:  EC_LIST_PDOS
+' Description:  List all the existing PDOs per slave
+' Called From:  User App
+' Author:  Nir Geller
+' Input Parameters:  None
+' Output Parameters: None
+' Return Value:  None
+' Algorithm:
+' Global Variables Used: None
+'****************************************************************************
+public function EC_LIST_PDOS as string
+
+  EC_LIST_PDOS = EC_GET_PDOS()
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_VALIDATE_AL_STATE
+' Description: Make sure that all the slaves are in a certain AL state
+' Called From: EC_ETHERCAT_INIT
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: 0 if all the slaves are in the required AL state, -1 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_VALIDATE_AL_STATE(byval al_state as long) as long
+
+	dim numOfSlaves as long = 0
+	dim retries as long = 0
+	dim retVal as long = 0
+	dim i as long = 0
+
+	EC_VALIDATE_AL_STATE = 0
+
+EC_VALIDATE_STATE_START:
+
+	numOfSlaves = EC_Num_Of_Slaves
+
+	for i = 1 to numOfSlaves
+
+		if EC_SLAVE_GET_STATE(i) <> al_state then
+
+			if retries < 10 then
+
+				printu "EC_VALIDATE_AL_STATE: Slave # in wrong state"; i
+				retries = retries + 1
+				retVal = EC_RESCAN_SLAVES
+				sleep 1000
+				goto EC_VALIDATE_STATE_START
+
+			else
+
+				EC_VALIDATE_AL_STATE = -1
+				goto EC_VALIDATE_STATE_DONE
+
+			end if
+
+		end if
+
+	next
+
+EC_VALIDATE_STATE_DONE:
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_VALIDATE_MINIMUM_PDOS
+' Description: Make sure that all the drives have the minimum required PDOs mapped
+' Called From: EC_STARTMASTER
+
+' Author: Nir Geller
+' Input Parameters: None
+' Output Parameters: None
+' Return Value: 0 if all drives have the PDOs, -1 otherwise
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_VALIDATE_MINIMUM_PDOS as long
+
+  dim numOfSlaves as long = 0
+  dim i as long = 0
+
+  EC_VALIDATE_MINIMUM_PDOS = 0
+
+  numOfSlaves = EC_Num_Of_Slaves
+
+  for i = 1 to numOfSlaves
+
+    if TRUE = ETSLAVES[i]->et_in_use and ETSLAVES[i]->et_slavetype = ECAT_MOTIONSLAVE then
+    
+      if EC_IS_PDO(i, 0x6040, 0) = 0 then  '  Control Word
+        EC_VALIDATE_MINIMUM_PDOS = -1
+        goto EC_VALIDATE_MINIMUM_PDOS_DONE
+      end if
+
+      if EC_IS_PDO(i, 0x6041, 0) = 0 then  '  Status Word
+        EC_VALIDATE_MINIMUM_PDOS = -1
+        goto EC_VALIDATE_MINIMUM_PDOS_DONE
+      end if
+
+
+      if ETSLAVES[i]->et_opmode <> -1 then  '  Assignment was done by Configurator generated EC_SETUP.PRG
+
+        if ETSLAVES[i]->et_opmode = 3 then  '  Profile Velocity Mode
+
+          if EC_IS_PDO(i, 0x60FF, 0) = 0 then  '  Velocity Command
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+          if EC_IS_PDO(i, 0x6064, 0) = 0 then  '  Position Feedback
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+        end if
+
+
+        if ETSLAVES[i]->et_opmode = 7 then  '  Interpolated Position Mode
+
+          if EC_IS_PDO(i, 0x60C1, 1) = 0 then  '  Position Command
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+          if EC_IS_PDO(i, 0x6064, 0) = 0 then  '  Position Feedback
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+        end if
+
+
+        if ETSLAVES[i]->et_opmode = 8 then  '  Sync Position Mode
+
+          if EC_IS_PDO(i, 0x607A, 0) = 0 then  '  Position Command
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+
+          if EC_IS_PDO(i, 0x6064, 0) = 0 then  '  Position Feedback
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+        end if
+
+
+        if ETSLAVES[i]->et_opmode = 9 then  '  Sync Velocity Mode
+
+          if EC_IS_PDO(i, 0x60FF, 0) = 0 then  '  Velocity Command
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+          if EC_IS_PDO(i, 0x6064, 0) = 0 then  '  Position Feedback
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+        end if
+
+
+        if ETSLAVES[i]->et_opmode = 10 then  '  Sync Torque Mode
+
+          if EC_IS_PDO(i, 0x6071, 0) = 0 then  '  Torque Command
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+          if EC_IS_PDO(i, 0x6078, 0) = 0 then  '  Torque Feedback
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+          if EC_IS_PDO(i, 0x6064, 0) = 0 then  '  Position Feedback
+            EC_VALIDATE_MINIMUM_PDOS = -1
+            goto EC_VALIDATE_MINIMUM_PDOS_DONE
+          end if
+
+        end if
+
+      end if
+
+    end if
+
+  next
+
+EC_VALIDATE_MINIMUM_PDOS_DONE:
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_setIlim
+' Description: set drive Ilim
+' Called From: SPS2015
+' Author: Eran Korkidi
+' Input Parameters:  lDadd ( long) - drive address 
+'          lIlimValue (long) - new Ilim value
+' Output Parameters: None
+' Return Value:
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public sub EC_setIlim(byval lDadd as long, byval lIlimValue as long)
+
+  dim lObjectIlim as long = 0x6073
+
+  if (lDadd > 0 AND lDadd <= Sys.NumberAxes) then
+    if NOT systemAxis(lDadd).Simulated then
+      call EC_SDO_WRITE(lDadd, lObjectIlim, 0, 16, lIlimValue)
+    end if
+  end if
+
+end sub
+
+
+'****************************************************************************
+' Function Name: EC_getIlim
+' Description: get drive Ilim
+' Called From: SPS2015
+' Author: Eran Korkidi
+' Input Parameters:  lDadd ( long) - drive address
+' Output Parameters: none
+' Return Value: (long) - Ilim value
+' Algorithm: 
+' Global Variables Used:
+' Revisions:
+'****************************************************************************
+public function EC_getIlim(byval lDadd as long) as long
+
+  dim lIlim    as long
+  dim lObjectIlim  as long = 0x6073
+
+  if (lDadd > 0 AND lDadd <= Sys.NumberAxes) then
+    if NOT systemAxis(lDadd).Simulated then
+      lIlim = EC_SDO_READ(lDadd, lObjectIlim, 0)
+    end if
+  end if
+
+  EC_getIlim = lIlim
+
+end function
+
+
+
+'**********************************************************************************
+' Function Name: EC_bus_diagnosti
+' Description:
+' Author: Yonathan Klein
+' Input Parameters:  
+' Return Value: (long) - Ilim value
+' Algorithm: NOT FINISHED!
+' Global Variables Used:
+' Revisions:
+'**********************************************************************************
+public function GetEcatDiags as string
+
+
+  dim diag_str as string = ""
+  dim tmp_var as string
+  dim i as long =1 
+  
+  tmp_var = ec_master
+
+    while mid$(tmp_var,i,1) <> "L"
+    i = i +1 
+  end while   
+    
+    while mid$(tmp_var,i,1) <> "T" 
+      if mid$(tmp_var,i,1) = ":" then
+        diag_str = diag_str + "$"
+        i = i +1
+      end if
+      if mid$(tmp_var,i,1) = " " then
+        i = i + 1
+      end if
+      diag_str = diag_str + mid$(tmp_var,i,1)
+      i = i +1 
+    
+    end while
+    
+  'diag_str = diag_str + "#"
+  
+  while mid$(tmp_var,i,1) <> "T"
+    i = i +1 
+  end while   
+    
+    while mid$(tmp_var,i,1) <> "R" 
+      if mid$(tmp_var,i,1) = ":" then
+        diag_str = diag_str + "$"
+        i = i +1
+      end if
+      if mid$(tmp_var,i,1) = " " then
+        i = i + 1
+      end if
+      diag_str = diag_str + mid$(tmp_var,i,1)
+      i = i +1 
+    
+    end while
+    
+
+  
+  'diag_str = diag_str + "#"
+  
+  while mid$(tmp_var,i,1) <> "R"
+    i = i +1 
+  end while
+   
+  while mid$(tmp_var,i,1) <> "L" 
+    if mid$(tmp_var,i,1) = ":" then
+      diag_str = diag_str + "$"
+      i = i + 1
+    end if
+    if mid$(tmp_var,i,1) = " " then
+      i = i + 1
+    end if   
+    diag_str = diag_str + mid$(tmp_var,i,1)
+    i = i +1 
+  
+  end while
+    
+    
+  
+  'diag_str = diag_str + "#"
+  
+  while mid$(tmp_var,i,1) <> "L"
+    i = i +1 
+  end while
+  
+  while mid$(tmp_var,i,1) <> "T" 
+    if mid$(tmp_var,i,1) = ":" then
+      diag_str = diag_str + "$"
+      i = i+ 1
+    end if   
+    diag_str = diag_str + mid$(tmp_var,i,1)
+    i = i +1 
+  
+  end while
+
+  'diag_str = diag_str + "#"  
+  
+  while mid$(tmp_var,i,1) <> "F"
+    i = i +1 
+  end while
+  
+  while mid$(tmp_var,i,1) <> "R" 
+    if mid$(tmp_var,i,1) = ":" then
+      diag_str = diag_str + "$"
+      i = i+1 
+    end if   
+    
+    diag_str = diag_str + mid$(tmp_var,i,1)
+    i = i +1 
+  
+  end while
+  GetEcatDiags = diag_str
+  
+end function
+
+' Reenumare all slaves, assign continous aliases, starting from 1
+public sub ec_EnumerateSlaves
+dim i as long
+  for i = 1 to  EC_Num_Of_Slaves
+    if EC_SLAVES_INFO[i]->alias <> i Then
+      call EC_WRITE_ALIAS(\
+      EC_SLAVES_INFO[i]->alias,i,\
+      EC_SLAVES_INFO[i]->vendor_id,\
+      EC_SLAVES_INFO[i]->product_code)
+    end if  
+  next 
+
+end sub
+
+' return slave ports dignostics
+'Registers 0x300 – 0x307 are the RX Error Counter registers.
+
+'0x300 – 0x301: RX Error counter for port 0.
+'0x302 – 0x303: RX Error counter for port 1.
+'0x304 – 0x305: RX Error counter for port 2.
+'0x306 – 0x307: RX Error counter for port 3.
+
+'Each register is 16 bits size.
+'Bits 0:7 -  Invalid frame counter. Incremented if there is an error in the frame format (Preamble, SFD – Start of Frame Delimiter, FCS – Checksum, invalid length)
+'Bits 8:15 -  RX Error counter. RX Errors may appear either inside or outside frames
+
+
+public function EC_SLAVE_ERROR_REGS(byval addr as long) as string
+dim cnt as long
+dim str1 as string
+EC_SLAVE_ERROR_REGS = ""
+for cnt = 0 to 3
+' mandatory  
+    EC_SLAVE_ERROR_REGS = EC_SLAVE_ERROR_REGS + "PORT"+str$(cnt)+" IFC:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_IFC+cnt*2,1))+" PHC:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_PHC+cnt*2,1))
+'optional
+    try
+        str1 = " PEC:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_PEC+cnt,1))
+    catch else
+        str1 =""
+    end try      
+    EC_SLAVE_ERROR_REGS = EC_SLAVE_ERROR_REGS + str1
+    try
+        str1 = " LLC:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_LLC+cnt,1))
+    catch else
+        str1 =""
+    end try      
+    EC_SLAVE_ERROR_REGS = EC_SLAVE_ERROR_REGS + str1+chr$(0xd)+chr$(0xa)
+' other optional registers  
+next 
+try
+    str1 = "MAL:"+str$(EC_SLAVE_READ_REGISTER(addr,SLAVE_MAL,1))
+catch else
+    str1 =""
+end try      
+EC_SLAVE_ERROR_REGS = EC_SLAVE_ERROR_REGS + str1
+try
+    str1 = " LEC:"+str$(EC_SLAVE_READ_REGISTER(addr,SLAVE_LEC,1))
+catch else
+    str1 =""
+end try      
+EC_SLAVE_ERROR_REGS = EC_SLAVE_ERROR_REGS + str1+chr$(0xd)+chr$(0xa)
+end function
+
+' reset slave error registers
+public sub EC_SLAVE_ERROR_reset(byval addr as long)
+dim cnt as long
+dim ret as long
+for cnt = 0 to 3
+' mandatory  
+    ret = EC_SLAVE_WRITE_REGISTER(addr,PORT0_IFC+cnt*2,1,0)
+    ret = EC_SLAVE_WRITE_REGISTER(addr,PORT0_PHC+cnt*2,1,0)
+'optional
+    ret = EC_SLAVE_WRITE_REGISTER(addr,PORT0_PEC+cnt,1,0)
+    ret = EC_SLAVE_WRITE_REGISTER(addr,PORT0_LLC+cnt,1,0)
+' other optional registers  
+next 
+    ret = EC_SLAVE_WRITE_REGISTER(addr,SLAVE_MAL,1,0)
+    ret = EC_SLAVE_WRITE_REGISTER(addr,SLAVE_LEC,1,0)
+end sub
+
+
+'****************************************************************************
+' Subroutine Name: Slave_REGS
+' Description:This function was written for the configurator. It gets the slave addreass
+'  and return long string, seperated by "$" between fields. The purpose of this function is that the configurator 
+'  will present the user the regisatrs problems.
+' Called From:
+' Author: Yonathan Klein
+' Input Parameters: Slave_address
+' Output Parameters: 
+' Return Value: Ethercat Library Version
+' Algorithm: 
+' Global Variables Used: None
+' Revisions:
+'****************************************************************************
+'****************************************************************************************************************
+public function Slave_REGS(byval addr as long) as string
+dim cnt as long
+dim str1 as string
+dim color as string = "$"
+Slave_REGS = ""
+
+for cnt = 0 to 3
+' mandatory  
+    Slave_REGS = Slave_REGS +  "PORT"+str$(cnt)+" $invalid frame counter:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_IFC+cnt*2,1))+"$ Physical error counter:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_PHC+cnt*2,1))
+'optional
+    try
+        str1 = "$ previous Error counter:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_PEC+cnt,1))
+    catch else
+        str1 =""
+    end try      
+    Slave_REGS = Slave_REGS + str1
+    try
+        str1 = "$ lost link:"+str$(EC_SLAVE_READ_REGISTER(addr,PORT0_LLC+cnt,1))
+    catch else
+        str1 =""
+    end try
+    color = "$black"
+    if (EC_SLAVE_READ_REGISTER(addr,PORT0_LLC+cnt,1) >= 5) = 1  OR (EC_SLAVE_READ_REGISTER(addr,PORT0_PEC+cnt,1) >= 5) = 1 OR (EC_SLAVE_READ_REGISTER(addr,PORT0_IFC+cnt*2,1) >= 5) = 1 OR  (EC_SLAVE_READ_REGISTER(addr,PORT0_PHC+cnt*2,1)>=5) = 1  then
+      color = "$orange"
+    end if
+    if (EC_SLAVE_READ_REGISTER(addr,PORT0_LLC+cnt,1) >= 50) =1 OR (EC_SLAVE_READ_REGISTER(addr,PORT0_PEC+cnt,1) >= 50) =1 OR (EC_SLAVE_READ_REGISTER(addr,PORT0_IFC+cnt*2,1) >= 50) =1 OR  (EC_SLAVE_READ_REGISTER(addr,PORT0_PHC+cnt*2,1)>= 50) = 1 then
+      color = "$red"
+    end if            
+    Slave_REGS = Slave_REGS + str1+ color + chr$(0xd)+chr$(0xa)
+' other optional registers  
+next 
+try
+    str1 = "Malformat error counter:"+str$(EC_SLAVE_READ_REGISTER(addr,SLAVE_MAL,1))
+catch else
+    str1 =""
+end try      
+Slave_REGS = Slave_REGS + str1
+try
+    str1 = "$ local Error counter:"+str$(EC_SLAVE_READ_REGISTER(addr,SLAVE_LEC,1))
+    str1 = str1 + "$$$$black"
+catch else
+    str1 =""
+end try      
+Slave_REGS = Slave_REGS + str1+chr$(0xd)+chr$(0xa)
+end function
+
+'****************************************************************************
+' Subroutine Name: GET_EC_IOS
+' Description: Display all the IO's, type (in or out), range and bit number. 
+' Called From: 
+' Author: Yonathan Klein
+' Input Parameters: 
+' Return Value: "address:first bit number: range:in or out". 
+'For example for mc with one cdhd the output will be - 1;1000;11;in
+'													   1;1000;6;out		
+' Return Value: Void
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function IOS_LIST as string
+
+  dim IOS as string = string$(4000,"")
+  dim s as long = 1024
+  dim tmp as long
+  
+  tmp= IO_LIST(IOS, s )
+  IOS_LIST=IOS
+
+
+end FUNCTION
+
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_SET_AXES_NUMBER
+' Description: Applicable only for multi-axis drives
+'				Set the number of axes that can be driven by the drive
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: drive_addr, number of axes: 1 - single axis drive
+'										>1 - multi axis drive
+' Return Value: 0 if successful, -1 otherwise
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_SET_AXES_NUMBER(byval drive_addr as long, byval num_of_axes as long) as long
+
+	EC_SLAVE_SET_AXES_NUMBER = EC_SLAVE_SET_NUM_AXES(drive_addr, num_of_axes)
+
+end function
+
+'****************************************************************************
+' Function Name: EC_SLAVE_GET_AXES_NUMBER
+' Description: Applicable only for multi-axis drives
+'				Get the number of axes that can be driven by the drive
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: drive_addr
+' Return Value: number of axes that can be driven by the drive
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_GET_AXES_NUMBER(byval drive_addr as long) as long
+
+	EC_SLAVE_GET_AXES_NUMBER = EC_SLAVE_GET_NUM_AXES(drive_addr)
+
+end function
+
+'****************************************************************************
+' Function Name: SYSDINFORCE
+' Description: Only for simulated IO. Force digital input to be 1 or 0.
+' Called From: 
+' Author: Yonathan Klein
+' Input Parameters: bit number, range, value to set.
+' Return Value: 
+' Algorit
+' Revisions:
+'****************************************************************************
+public function SYSDINFORCE(byval bitnumber as long , byval range as long , byval setval as long )as long
+
+	dim tmp as long
+
+	tmp = SETINPUT(bitnumber,range,setval)
+
+	SYSDINFORCE=tmp
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_SET_SLAVES_CALIB_INTERVAL
+' Description: Set interval between sent packets when slaves calibration thread is running
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: interval in uSecs
+' Return Value: 0
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_SET_SLAVES_CALIB_INTERVAL(byval interval as long) as long
+
+	ECAT_SET_SLAVES_CALIB_INTERVAL(interval)
+
+	EC_SET_SLAVES_CALIB_INTERVAL = 0
+
+end function
+
+'****************************************************************************
+' Function Name: EC_GET_SLAVES_CALIB_INTERVAL
+' Description: Get interval between sent packets when slaves calibration thread is running
+' Called From: 
+' Author: Nir Geller
+' Input Parameters:
+' Return Value: send interval
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_GET_SLAVES_CALIB_INTERVAL as long
+
+	EC_GET_SLAVES_CALIB_INTERVAL = ECAT_GET_SLAVES_CALIB_INTERVAL()
+
+end function
+
+
+'****************************************************************************
+' Function Name: EC_SLAVE_SET_OVERLAPPING_PDOS
+' Description: Set interval between sent packets when slaves calibration thread is running
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: slave address
+'					Slave allows overlapping pdos - TRUE or FALSE
+' Return Value: 0 if successful, negative value otherwise
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_SLAVE_SET_OVERLAPPING_PDOS(byval slave_addr as long, byval flag as long) as long
+
+	EC_SLAVE_SET_OVERLAPPING_PDOS = EC_SET_OVERLAPPING_PDOS(slave_addr, flag)
+
+end function
+
+
+
+
+'****************************************************************************
+' Function Name: EC_SET_SDO_GLOBAL_TIMEOUT
+' Description: Set global SDO timeout. Used when the master is not active for all SDO requests.
+'		The default is 1000ms
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: SDO request timeout in ms
+'
+' Return Value: 0 if successful, negative value otherwise
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_SET_SDO_GLOBAL_TIMEOUT(byval sdo_timeout as long) as long
+
+	EC_SET_SDO_GLOBAL_TIMEOUT = ECAT_SET_SDO_GLOBAL_TIMEOUT(sdo_timeout)
+
+end function
+
+
+
+'****************************************************************************
+' Function Name: EC_SET_SDO_REQUEST_TIMEOUT
+' Description: Set SDO request timeout. Used when the master is active per slave.
+'		The default is 1000ms
+' Called From: 
+' Author: Nir Geller
+' Input Parameters: Slave address
+'		     SDO request timeout in ms
+'
+' Return Value: 0 if successful, negative value otherwise
+' Algorithm: 
+' Global Variables Used
+' Revisions:
+'****************************************************************************
+public function EC_SET_SDO_REQUEST_TIMEOUT(byval slave_addr as long, byval sdo_timeout as long) as long
+
+	EC_SET_SDO_REQUEST_TIMEOUT = ECAT_SET_SDO_REQUEST_TIMEOUT(slave_addr, sdo_timeout)
+
+end function
+
+
+
+public function EC_FIX_EEPROM_AND_SET_TO_PREOP(byval slaveaddr as long) as long
+
+	dim ret as long = 0
+
+	ret = EC_SLAVE_WRITE_REGISTER(slaveAddr, 0x500, 1, 1)'#eeprom to pdi
+	sleep 100
+	ret = EC_SLAVE_SET_STATE(slaveAddr,EC_STATE_PREOP)
+	sleep 100
+	ret = EC_SLAVE_WRITE_REGISTER(slaveAddr, 0x500, 1, 0)'#eeprom to ecat
+
+	EC_FIX_EEPROM_AND_SET_TO_PREOP = 0
+
+end function
+

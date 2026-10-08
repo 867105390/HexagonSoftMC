@@ -1,0 +1,32 @@
+# Windows / editor metadata
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# ControlStudio / controller runtime output
+FAULT.LOG
+NOTES.LOG
+TRN.ERR
+*.rec
+
+# Local ControlStudio state and controller-generated measurement data
+CONTROLSTUDIO.dat
+CSFW.DAT
+CONTROLSTUDIO.pse
+SET_X.DAT
+SET_Y.DAT
+SETT_Z.DAT
+Data_xy.DAT
+SetT_xy.DAT
+SetT_z.DAT
+stoptime.DAT
